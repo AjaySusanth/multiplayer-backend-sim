@@ -1,0 +1,9 @@
+CREATE TABLE IF NOT EXISTS players (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(255) NOT NULL UNIQUE,
+    skill_rating INT NOT NULL DEFAULT 1000,
+    region VARCHAR(50) NOT NULL,
+    status VARCHAR(50) NOT NULL DEFAULT 'IDLE',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
