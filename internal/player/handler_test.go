@@ -115,7 +115,7 @@ func TestHandleGet(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/players/"+reqID, nil)
 			// Go 1.22 allows manually setting routing PathValues on the request for testing
 			req.SetPathValue("id", reqID)
-			
+
 			rr := httptest.NewRecorder()
 			h.handleGet(rr, req)
 

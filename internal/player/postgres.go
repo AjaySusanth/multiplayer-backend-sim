@@ -73,7 +73,7 @@ func (s *PostgresPlayerStore) GetByID(ctx context.Context, id string) (*Player, 
 		&p.UpdatedAt,
 	)
 	if err != nil {
-		if errors.Is(err,pgx.ErrNoRows) {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrPlayerNotFound
 		}
 		return nil, fmt.Errorf("querying player by id: %w", err)
