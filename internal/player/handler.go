@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"github.com/go-chi/chi/v5"
 )
 
 type Handler struct {
@@ -19,11 +20,12 @@ func NewHandler(store PlayerStore, logger *slog.Logger) *Handler {
 	}
 }
 
-func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("POST /api/v1/players", h.handleCreate)
-	mux.HandleFunc("GET /api/v1/players/{id}", h.handleGet)
-	mux.HandleFunc("DELETE /api/v1/players/{id}", h.handleDelete)
+func (h *Handler) RegisterRoutes(router chi.Router) {
+	router.Post("/api/v1/players", h.handleCreate)
+	router.Get("/api/v1/players/{id}", h.handleGet)
+	router.Delete("/api/v1/players/{id}", h.handleDelete)
 }
+
 
 func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request) {
 	var input CreatePlayerInput
@@ -47,7 +49,7 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+	id := chi.URLParam(r,"id")
 	if id == "" {
 		h.writeError(w, http.StatusBadRequest, "missing player id")
 		return
@@ -67,7 +69,7 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleDelete(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+	id := chi.URLParam(r,"id")
 	if id == "" {
 		h.writeError(w, http.StatusBadRequest, "missing player id")
 		return

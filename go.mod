@@ -3,6 +3,7 @@ module multiplayer-backend-sim
 go 1.27.0
 
 require (
+	github.com/go-chi/chi/v5 v5.3.2
 	github.com/golang-migrate/migrate/v4 v4.20.1
 	github.com/jackc/pgx/v5 v5.11.0
 )

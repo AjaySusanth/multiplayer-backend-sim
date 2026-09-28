@@ -16,6 +16,9 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+
 	"multiplayer-backend-sim/internal/config"
 	"multiplayer-backend-sim/internal/health"
 	"multiplayer-backend-sim/internal/player"
@@ -68,15 +71,20 @@ func main() {
 	playerHandler := player.NewHandler(playerStore, logger)
 	healthHandler := health.NewHandler(dbPool)
 
-	// 6. Register routes on stdlib ServeMux
-	mux := http.NewServeMux()
-	playerHandler.RegisterRoutes(mux)
-	healthHandler.RegisterRoutes(mux)
+	// 6. Initialize Chi router and attach standard production middleware
+	r := chi.NewRouter()
+	r.Use(middleware.RequestID)
+	r.Use(middleware.RealIP)
+	r.Use(middleware.Logger)
+	r.Use(middleware.Recoverer)
+
+	playerHandler.RegisterRoutes(r)
+	healthHandler.RegisterRoutes(r)
 
 	// 7. Configure HTTP server timeouts
 	server := &http.Server{
 		Addr:         ":" + cfg.Port,
-		Handler:      mux,
+		Handler:      r,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  60 * time.Second,

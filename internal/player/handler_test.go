@@ -10,13 +10,18 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/go-chi/chi/v5"
 )
 
 // setupTestEnv initializes the handler with a FakePlayerStore and a discarded logger.
-func setupTestEnv() (*Handler, *FakePlayerStore) {
+func setupTestEnv() (http.Handler, *FakePlayerStore) {
 	store := NewFakePlayerStore()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewHandler(store, logger), store
+	handler := NewHandler(store, logger)
+	r := chi.NewRouter()
+	handler.RegisterRoutes(r)
+	return r, store
 }
 
 func TestHandleCreate(t *testing.T) {
@@ -55,7 +60,7 @@ func TestHandleCreate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h, store := setupTestEnv()
+			router, store := setupTestEnv()
 			tt.setupStore(store)
 
 			var body bytes.Buffer
@@ -64,7 +69,7 @@ func TestHandleCreate(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/players", &body)
 			rr := httptest.NewRecorder()
 
-			h.handleCreate(rr, req)
+			router.ServeHTTP(rr,req)
 
 			if rr.Code != tt.expectedStatus {
 				t.Errorf("expected status %d, got %d. Body: %s", tt.expectedStatus, rr.Code, rr.Body.String())
@@ -109,7 +114,7 @@ func TestHandleGet(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h, store := setupTestEnv()
+			router, store := setupTestEnv()
 			reqID := tt.setupStore(store)
 
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/players/"+reqID, nil)
@@ -117,7 +122,7 @@ func TestHandleGet(t *testing.T) {
 			req.SetPathValue("id", reqID)
 
 			rr := httptest.NewRecorder()
-			h.handleGet(rr, req)
+			router.ServeHTTP(rr,req)
 
 			if rr.Code != tt.expectedStatus {
 				t.Errorf("expected status %d, got %d", tt.expectedStatus, rr.Code)

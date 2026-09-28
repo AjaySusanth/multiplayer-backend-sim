@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"time"
+	"github.com/go-chi/chi/v5"
 )
 
 type Pinger interface {
@@ -21,9 +22,9 @@ func NewHandler(dbPinger Pinger) *Handler {
 	}
 }
 
-func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /health/live", h.handleLiveness)
-	mux.HandleFunc("GET /health/ready", h.handleReadiness)
+func (h *Handler) RegisterRoutes(router chi.Router) {
+	router.Get("/health/live", h.handleLiveness)
+	router.Get("/health/ready", h.handleReadiness)
 }
 
 func (h *Handler) handleLiveness(w http.ResponseWriter, r *http.Request) {
