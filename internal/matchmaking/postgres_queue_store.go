@@ -23,7 +23,7 @@ func NewPostgresQueueStore(pool *pgxpool.Pool) *PostgresQueueStore {
 	}
 }
 
-func (s *PostgresQueueStore) create(ctx context.Context,input CreateQueueEntryInput) (*QueueEntry,error) {
+func (s *PostgresQueueStore) Create(ctx context.Context,input CreateQueueEntryInput) (*QueueEntry,error) {
 	expiresAt :=time.Now().UTC().Add(5*time.Minute)
 	query:= `INSERT INTO queue_entries (player_id, skill_rating, region, expires_at)
 		VALUES ($1, $2, $3, $4)

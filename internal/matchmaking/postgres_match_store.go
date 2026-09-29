@@ -13,7 +13,7 @@ type PostgresMatchStore struct {
 	pool *pgxpool.Pool
 }
 
-func NewHandler(pool *pgxpool.Pool) *PostgresMatchStore {
+func NewPostgresMatchStore(pool *pgxpool.Pool) *PostgresMatchStore {
 	return &PostgresMatchStore{
 		pool: pool,
 	}

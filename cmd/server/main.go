@@ -15,6 +15,7 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -22,6 +23,7 @@ import (
 	"multiplayer-backend-sim/internal/config"
 	"multiplayer-backend-sim/internal/health"
 	"multiplayer-backend-sim/internal/player"
+	"multiplayer-backend-sim/internal/matchmaking"
 )
 
 func main() {
@@ -66,10 +68,35 @@ func main() {
 	}
 	logger.Info("successfully connected to postgresql database pool")
 
-	// 5. Initialize repositories and HTTP handlers
+	// 5. Initialize Redis Client
+	opt, err := redis.ParseURL(cfg.RedisURL)
+	if err != nil {
+		logger.Error("failed to parse redis url", "error", err)
+		os.Exit(1)
+	}
+	redisClient := redis.NewClient(opt)
+	defer redisClient.Close()
+	if err := redisClient.Ping(ctx).Err(); err != nil {
+		logger.Error("failed to connect to redis", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("successfully connected to redis")
+
 	playerStore := player.NewPostgresPlayerStore(dbPool)
+	queueStore := matchmaking.NewPostgresQueueStore(dbPool)
+	matchStore := matchmaking.NewPostgresMatchStore(dbPool)
+	publisher := matchmaking.NewRedisQueuePublisher(redisClient)
+	
+
 	playerHandler := player.NewHandler(playerStore, logger)
 	healthHandler := health.NewHandler(dbPool)
+	matchmakingHandler := matchmaking.NewHandler(
+		playerStore,
+		queueStore,
+		matchStore,
+		publisher,
+		logger,
+	)
 
 	// 6. Initialize Chi router and attach standard production middleware
 	r := chi.NewRouter()
@@ -80,6 +107,7 @@ func main() {
 
 	playerHandler.RegisterRoutes(r)
 	healthHandler.RegisterRoutes(r)
+	matchmakingHandler.RegisterRoutes(r)
 
 	// 7. Configure HTTP server timeouts
 	server := &http.Server{
