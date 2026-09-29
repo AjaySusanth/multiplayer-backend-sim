@@ -19,7 +19,7 @@ func Load() *Config {
 	return &Config{
 		Port:        getEnv("PORT", "8080"),
 		DatabaseURL: getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/multiplayer_sim?sslmode=disable"),
-		RedisURL:    getEnv("REDIS_URL", "localhost:6379"),
+		RedisURL:    getEnv("REDIS_URL", "redis://localhost:6379/0"),
 		LogLevel:    getEnv("LOG_LEVEL", "info"),
 		WorkerCount: getEnvAsInt("WORKER_COUNT", 3),
 	}
