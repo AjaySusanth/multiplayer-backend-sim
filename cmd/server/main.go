@@ -51,18 +51,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 4. Initialize PostgreSQL connection pool (pgxpool)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	startupCtx, startupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer startupCancel()
 
-	dbPool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	dbPool, err := pgxpool.New(startupCtx, cfg.DatabaseURL)
 	if err != nil {
 		logger.Error("unable to initialize postgres connection pool", "error", err)
 		os.Exit(1)
 	}
 	defer dbPool.Close()
 
-	if err := dbPool.Ping(ctx); err != nil {
+	if err := dbPool.Ping(startupCtx); err != nil {
 		logger.Error("failed to connect to postgresql database", "error", err)
 		os.Exit(1)
 	}
@@ -76,7 +75,7 @@ func main() {
 	}
 	redisClient := redis.NewClient(opt)
 	defer redisClient.Close()
-	if err := redisClient.Ping(ctx).Err(); err != nil {
+	if err := redisClient.Ping(startupCtx).Err(); err != nil {
 		logger.Error("failed to connect to redis", "error", err)
 		os.Exit(1)
 	}
@@ -97,6 +96,16 @@ func main() {
 		publisher,
 		logger,
 	)
+
+	consumer := matchmaking.NewConsumer(redisClient,queueStore,matchStore,logger)
+
+	if err:= consumer.SetupGroup(startupCtx);err!=nil {
+		logger.Error("failed to setup redis consumer group", "error", err)
+		os.Exit(1)
+	}
+
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+	go consumer.Run(workerCtx)
 
 	// 6. Initialize Chi router and attach standard production middleware
 	r := chi.NewRouter()
@@ -136,6 +145,8 @@ func main() {
 		}
 	case sig := <-shutdown:
 		logger.Info("shutdown signal received, initiating graceful shutdown", "signal", sig.String())
+
+		workerCancel()
 
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer shutdownCancel()
