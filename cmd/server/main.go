@@ -15,6 +15,7 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -22,6 +23,7 @@ import (
 	"multiplayer-backend-sim/internal/config"
 	"multiplayer-backend-sim/internal/health"
 	"multiplayer-backend-sim/internal/player"
+	"multiplayer-backend-sim/internal/matchmaking"
 )
 
 func main() {
@@ -49,27 +51,61 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 4. Initialize PostgreSQL connection pool (pgxpool)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	startupCtx, startupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer startupCancel()
 
-	dbPool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	dbPool, err := pgxpool.New(startupCtx, cfg.DatabaseURL)
 	if err != nil {
 		logger.Error("unable to initialize postgres connection pool", "error", err)
 		os.Exit(1)
 	}
 	defer dbPool.Close()
 
-	if err := dbPool.Ping(ctx); err != nil {
+	if err := dbPool.Ping(startupCtx); err != nil {
 		logger.Error("failed to connect to postgresql database", "error", err)
 		os.Exit(1)
 	}
 	logger.Info("successfully connected to postgresql database pool")
 
-	// 5. Initialize repositories and HTTP handlers
+	// 5. Initialize Redis Client
+	opt, err := redis.ParseURL(cfg.RedisURL)
+	if err != nil {
+		logger.Error("failed to parse redis url", "error", err)
+		os.Exit(1)
+	}
+	redisClient := redis.NewClient(opt)
+	defer redisClient.Close()
+	if err := redisClient.Ping(startupCtx).Err(); err != nil {
+		logger.Error("failed to connect to redis", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("successfully connected to redis")
+
 	playerStore := player.NewPostgresPlayerStore(dbPool)
+	queueStore := matchmaking.NewPostgresQueueStore(dbPool)
+	matchStore := matchmaking.NewPostgresMatchStore(dbPool)
+	publisher := matchmaking.NewRedisQueuePublisher(redisClient)
+	
+
 	playerHandler := player.NewHandler(playerStore, logger)
 	healthHandler := health.NewHandler(dbPool)
+	matchmakingHandler := matchmaking.NewHandler(
+		playerStore,
+		queueStore,
+		matchStore,
+		publisher,
+		logger,
+	)
+
+	consumer := matchmaking.NewConsumer(redisClient,queueStore,matchStore,logger)
+
+	if err:= consumer.SetupGroup(startupCtx);err!=nil {
+		logger.Error("failed to setup redis consumer group", "error", err)
+		os.Exit(1)
+	}
+
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+	go consumer.Run(workerCtx)
 
 	// 6. Initialize Chi router and attach standard production middleware
 	r := chi.NewRouter()
@@ -80,6 +116,7 @@ func main() {
 
 	playerHandler.RegisterRoutes(r)
 	healthHandler.RegisterRoutes(r)
+	matchmakingHandler.RegisterRoutes(r)
 
 	// 7. Configure HTTP server timeouts
 	server := &http.Server{
@@ -108,6 +145,8 @@ func main() {
 		}
 	case sig := <-shutdown:
 		logger.Info("shutdown signal received, initiating graceful shutdown", "signal", sig.String())
+
+		workerCancel()
 
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer shutdownCancel()
