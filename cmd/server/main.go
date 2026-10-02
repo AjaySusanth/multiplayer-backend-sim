@@ -22,8 +22,9 @@ import (
 
 	"multiplayer-backend-sim/internal/config"
 	"multiplayer-backend-sim/internal/health"
-	"multiplayer-backend-sim/internal/player"
 	"multiplayer-backend-sim/internal/matchmaking"
+	"multiplayer-backend-sim/internal/player"
+	"multiplayer-backend-sim/internal/session"
 )
 
 func main() {
@@ -84,6 +85,7 @@ func main() {
 	playerStore := player.NewPostgresPlayerStore(dbPool)
 	queueStore := matchmaking.NewPostgresQueueStore(dbPool)
 	matchStore := matchmaking.NewPostgresMatchStore(dbPool)
+	sessionStore := session.NewPostgresSessionStore(dbPool)
 	publisher := matchmaking.NewRedisQueuePublisher(redisClient)
 	
 
@@ -96,6 +98,7 @@ func main() {
 		publisher,
 		logger,
 	)
+	sessionHandler := session.NewHandler(sessionStore,logger)
 
 	consumer := matchmaking.NewConsumer(redisClient,queueStore,matchStore,logger)
 
@@ -117,6 +120,7 @@ func main() {
 	playerHandler.RegisterRoutes(r)
 	healthHandler.RegisterRoutes(r)
 	matchmakingHandler.RegisterRoutes(r)
+	sessionHandler.RegisterRoutes(r)
 
 	// 7. Configure HTTP server timeouts
 	server := &http.Server{
