@@ -16,6 +16,7 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -25,6 +26,7 @@ import (
 	"multiplayer-backend-sim/internal/matchmaking"
 	"multiplayer-backend-sim/internal/player"
 	"multiplayer-backend-sim/internal/session"
+	"multiplayer-backend-sim/internal/metrics"
 )
 
 func main() {
@@ -40,6 +42,8 @@ func main() {
 		Level: logLevel,
 	}))
 	slog.SetDefault(logger)
+
+	metrics.Init()
 
 	logger.Info("starting multiplayer-backend-sim API server",
 		"port", cfg.Port,
@@ -116,6 +120,10 @@ func main() {
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
+
+	r.Use(metrics.HTTPMetricMiddleware)
+
+	r.Handle("/metrics", promhttp.Handler())
 
 	playerHandler.RegisterRoutes(r)
 	healthHandler.RegisterRoutes(r)

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+	"multiplayer-backend-sim/internal/metrics"
 )
 
 type Position struct {
@@ -56,6 +57,8 @@ func NewRoom(sessionID, matchID string, logger *slog.Logger) *Room {
 }
 
 func (r *Room) Run(ctx context.Context) {
+	metrics.ActiveMatches.Inc()
+	defer metrics.ActiveMatches.Dec()
 	r.logger.Info("game room started", "session_id", r.ID)
 	ticker  := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
