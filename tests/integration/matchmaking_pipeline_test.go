@@ -42,7 +42,7 @@ func TestMatchMakingPipeline_EndToEnd(t *testing.T) {
 	publisher := matchmaking.NewRedisQueuePublisher(harness.RedisClient)
 	// Suppress noisy worker logs in test output
 	discardLogger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	consumer := matchmaking.NewConsumer(harness.RedisClient, queueStore, matchStore, discardLogger)
+	consumer := matchmaking.NewConsumer(harness.RedisClient, queueStore, matchStore, discardLogger,"matchmaking_worker_1")
 
 
 	if err := consumer.SetupGroup(ctx); err != nil {
