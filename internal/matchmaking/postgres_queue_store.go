@@ -54,7 +54,7 @@ func (s *PostgresQueueStore) Create(ctx context.Context,input CreateQueueEntryIn
 func (s *PostgresQueueStore) GetActiveByPlayerID(ctx context.Context,playerID string) (*QueueEntry,error) {
 	query := `
 		SELECT id, player_id, skill_rating, region, status, joined_at, matched_at, expires_at FROM queue_entries
-		WHERE player_id = $1 and status = "QUEUED"
+		WHERE player_id = $1 and status = 'QUEUED'
 	`
 
 	var q QueueEntry
