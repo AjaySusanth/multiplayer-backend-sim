@@ -16,7 +16,7 @@ func TestSubmitResult(t *testing.T) {
 	handler := NewHandler(store)
 
 	r := chi.NewRouter()
-	r.Post("/api/v1/matches/{match_id}/result", handler.SubmitResult)
+	handler.RegisterRoutes(r)
 
 	matchID := uuid.New()
 	playerID := uuid.New()

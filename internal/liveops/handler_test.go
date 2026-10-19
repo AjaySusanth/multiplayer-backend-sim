@@ -116,7 +116,7 @@ func TestCreateConfiguration(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store.SimulatedErr = tt.simulateErr
 
-			req := httptest.NewRequest(http.MethodPost, "/liveops/configurations", bytes.NewBufferString(tt.payload))
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/liveops/configurations", bytes.NewBufferString(tt.payload))
 			req.Header.Set("Content-Type", "application/json")
 			rr := httptest.NewRecorder()
 
@@ -154,7 +154,7 @@ func TestActivateAndRollbackConfiguration(t *testing.T) {
 	}
 
 	t.Run("activate version 2 - success", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/liveops/configurations/2/activate", nil)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/liveops/configurations/2/activate", nil)
 		req.Header.Set("X-Actor-ID", "admin-super")
 		rr := httptest.NewRecorder()
 
@@ -173,7 +173,7 @@ func TestActivateAndRollbackConfiguration(t *testing.T) {
 	})
 
 	t.Run("activate version 2 again - conflict", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/liveops/configurations/2/activate", nil)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/liveops/configurations/2/activate", nil)
 		rr := httptest.NewRecorder()
 
 		r.ServeHTTP(rr, req)
@@ -184,7 +184,7 @@ func TestActivateAndRollbackConfiguration(t *testing.T) {
 	})
 
 	t.Run("rollback to version 1 - success", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/liveops/configurations/1/rollback", nil)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/liveops/configurations/1/rollback", nil)
 		req.Header.Set("X-Actor-ID", "admin-rollback")
 		rr := httptest.NewRecorder()
 
@@ -203,7 +203,7 @@ func TestActivateAndRollbackConfiguration(t *testing.T) {
 	})
 
 	t.Run("activate non-existent version - not found", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/liveops/configurations/999/activate", nil)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/liveops/configurations/999/activate", nil)
 		rr := httptest.NewRecorder()
 
 		r.ServeHTTP(rr, req)
@@ -219,7 +219,7 @@ func TestGetActiveAndAuditLogs(t *testing.T) {
 
 	// Initially no active config
 	t.Run("get active - not found initially", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/liveops/configurations/active", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/liveops/configurations/active", nil)
 		rr := httptest.NewRecorder()
 
 		r.ServeHTTP(rr, req)
@@ -250,7 +250,7 @@ func TestGetActiveAndAuditLogs(t *testing.T) {
 	})
 
 	t.Run("get active - success", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/liveops/configurations/active", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/liveops/configurations/active", nil)
 		rr := httptest.NewRecorder()
 
 		r.ServeHTTP(rr, req)
@@ -261,7 +261,7 @@ func TestGetActiveAndAuditLogs(t *testing.T) {
 	})
 
 	t.Run("list audit logs - success", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/liveops/audit-logs?limit=10", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/liveops/audit-logs?limit=10", nil)
 		rr := httptest.NewRecorder()
 
 		r.ServeHTTP(rr, req)

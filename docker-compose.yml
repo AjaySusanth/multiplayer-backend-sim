@@ -59,7 +59,7 @@ services:
       dockerfile: Dockerfile
     container_name: multiplayer_worker
     restart: unless-stopped
-    command: ["worker"]
+    entrypoint: ["worker"]
     environment:
       DATABASE_URL: "postgres://postgres:postgres@postgres:5432/multiplayer_sim?sslmode=disable"
       REDIS_URL: "redis://redis:6379/0"

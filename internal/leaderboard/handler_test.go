@@ -56,7 +56,7 @@ func TestGetTopPlayers(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store.Err = tt.simulateErr // Inject error if specified by the test case
 
-			req := httptest.NewRequest("GET", "/leaderboards"+tt.query, nil)
+			req := httptest.NewRequest("GET", "/api/v1/leaderboards"+tt.query, nil)
 			rr := httptest.NewRecorder()
 			r.ServeHTTP(rr, req)
 
@@ -114,7 +114,7 @@ func TestGetPlayerRank(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store.Err = tt.simulateErr
 
-			req := httptest.NewRequest("GET", "/leaderboards/"+tt.playerID+"/rank", nil)
+			req := httptest.NewRequest("GET", "/api/v1/leaderboards/"+tt.playerID+"/rank", nil)
 			rr := httptest.NewRecorder()
 			r.ServeHTTP(rr, req)
 
