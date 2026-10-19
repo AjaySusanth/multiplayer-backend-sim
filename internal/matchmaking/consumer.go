@@ -22,6 +22,7 @@ type Consumer struct {
 	matchStore   MatchStore
 	logger       *slog.Logger
 	consumerName string // unique per worker instance
+	staleTimeout time.Duration
 }
 
 func NewConsumer(
@@ -37,7 +38,14 @@ func NewConsumer(
 		matchStore:   ms,
 		logger:       logger,
 		consumerName: consumerName,
+		staleTimeout: StaleMessageTimeout,
 	}
+}
+
+// WithStaleTimeout overrides the default stale message timeout (useful for tests).
+func (c *Consumer) WithStaleTimeout(d time.Duration) *Consumer {
+	c.staleTimeout = d
+	return c
 }
 
 func (c *Consumer) SetupGroup(ctx context.Context) error {
@@ -66,7 +74,7 @@ func (c *Consumer) Run(ctx context.Context) {
 			Stream:   MatchmakingStreamKey,
 			Group:    ConsumerGroupName,
 			Consumer: c.consumerName,
-			MinIdle:  StaleMessageTimeout,
+			MinIdle:  c.staleTimeout,
 			Start:    "0-0", // scan from the very beginning of the PEL
 			Count:    50,
 		}).Result()
