@@ -21,6 +21,8 @@ go.work.sum
 # Environment variables
 .env
 
+
 # Custom ignored directories
 .agents/
 docs/
+.vscode

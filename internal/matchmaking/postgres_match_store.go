@@ -9,6 +9,7 @@ import (
 )
 
 
+
 type PostgresMatchStore struct {
 	pool *pgxpool.Pool
 }
@@ -19,17 +20,62 @@ func NewPostgresMatchStore(pool *pgxpool.Pool) *PostgresMatchStore {
 	}
 }
 
-func (s *PostgresMatchStore) CreateMatch(ctx context.Context,region string, playerIDs []string) (*Match, error) {
-	tx,err := s.pool.Begin(ctx)
-	if err!=nil {
-		return nil, fmt.Errorf("starting a transaction %w",err)
-	}
+var ErrPlayerAlreadyInMatch = errors.New("one or more players are already in an active match")
 
+func (s *PostgresMatchStore) CreateMatch(ctx context.Context, region string, playerIDs []string) (*Match, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("starting a transaction %w", err)
+	}
 	defer tx.Rollback(ctx)
 
+	// 1. Idempotency & Collision Check:
+	// Check if any player is already in an active match.
+	activeCheckQuery := `
+		SELECT mp.match_id, mp.player_id
+		FROM match_players mp
+		JOIN matches m ON m.id = mp.match_id
+		WHERE mp.player_id = ANY($1) 
+		  AND m.status IN ('CREATED', 'IN_PROGRESS')
+		FOR UPDATE OF m
+	`
+	rows, err := tx.Query(ctx, activeCheckQuery, playerIDs)
+	if err != nil {
+		return nil, fmt.Errorf("checking active match for players: %w", err)
+	}
+	defer rows.Close()
+
+	existingMatches := make(map[string]map[string]bool)
+	for rows.Next() {
+		var mID, pID string
+		if err := rows.Scan(&mID, &pID); err != nil {
+			return nil, fmt.Errorf("scanning active match check: %w", err)
+		}
+		if existingMatches[mID] == nil {
+			existingMatches[mID] = make(map[string]bool)
+		}
+		existingMatches[mID][pID] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating active match rows: %w", err)
+	}
+
+	// If this exact group of players is already in the same active match,
+	// return that existing match (idempotent replay of a crashed/retried job).
+	for mID, matchedPlayerMap := range existingMatches {
+		if len(matchedPlayerMap) == len(playerIDs) {
+			// All players are in this match already — return existing match
+			tx.Rollback(ctx)
+			return s.GetByID(ctx, mID)
+		}
+		// Otherwise, a player is in a different match
+		return nil, ErrPlayerAlreadyInMatch
+	}
+
+	// 2. No active match exists for these players — create a new one
 	m := &Match{
-		Region: region,
-		Players: make([]MatchPlayer,0,len(playerIDs)),
+		Region:  region,
+		Players: make([]MatchPlayer, 0, len(playerIDs)),
 	}
 
 	matchQuery := `
@@ -37,27 +83,29 @@ func (s *PostgresMatchStore) CreateMatch(ctx context.Context,region string, play
 		VALUES ($1)
 		RETURNING id, status, created_at
 	`
-	err = tx.QueryRow(ctx,matchQuery,region).Scan(&m.ID,&m.Status,&m.CreatedAt)
+	err = tx.QueryRow(ctx, matchQuery, region).Scan(&m.ID, &m.Status, &m.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("inserting match: %w", err)
+	}
 
 	participantQuery := `
 		INSERT INTO match_players (match_id, player_id)
 		VALUES ($1, $2)
 		RETURNING joined_at
 	`
-
-	for _,pID := range playerIDs {
+	for _, pID := range playerIDs {
 		mp := MatchPlayer{PlayerID: pID}
-		err =  tx.QueryRow(ctx,participantQuery,m.ID,pID).Scan(&mp.JoinedAt)
-		if err!= nil {
+		err = tx.QueryRow(ctx, participantQuery, m.ID, pID).Scan(&mp.JoinedAt)
+		if err != nil {
 			return nil, fmt.Errorf("inserting match participant %s: %w", pID, err)
 		}
 		m.Players = append(m.Players, mp)
 	}
 
-	if err:= tx.Commit(ctx); err!=nil {
+	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("committing match transaction: %w", err)
 	}
-	return m,nil
+	return m, nil
 }
 
 func (s *PostgresMatchStore) GetByID (ctx context.Context,matchID string) (*Match,error) {
