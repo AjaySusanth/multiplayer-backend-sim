@@ -122,3 +122,85 @@ func TestHandleLeave(t *testing.T) {
 		}
 	})
 }
+
+func TestHandleStatus(t *testing.T) {
+	t.Parallel()
+
+	t.Run("never queued returns 404", func(t *testing.T) {
+		r, _, _, _ := setupTestEnv()
+
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/matchmaking/status/unknown-player", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("expected 404 Not Found, got %d", rr.Code)
+		}
+	})
+
+	t.Run("actively queued returns 200 QUEUED", func(t *testing.T) {
+		r, qs, _, _ := setupTestEnv()
+
+		_, err := qs.Create(context.Background(), CreateQueueEntryInput{
+			PlayerID:    "player-queued",
+			SkillRating: 1200,
+			Region:      "NA",
+		})
+		if err != nil {
+			t.Fatalf("failed to create queue entry: %v", err)
+		}
+
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/matchmaking/status/player-queued", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d", rr.Code)
+		}
+
+		var res QueueEntry
+		if err := json.NewDecoder(rr.Body).Decode(&res); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+		if res.Status != QueueStatusQueued {
+			t.Errorf("expected status QUEUED, got %s", res.Status)
+		}
+	})
+
+	t.Run("matched returns 200 MATCHED with match_id", func(t *testing.T) {
+		r, qs, _, _ := setupTestEnv()
+
+		entry, err := qs.Create(context.Background(), CreateQueueEntryInput{
+			PlayerID:    "player-matched",
+			SkillRating: 1250,
+			Region:      "NA",
+		})
+		if err != nil {
+			t.Fatalf("failed to create queue entry: %v", err)
+		}
+
+		// Simulate match completion
+		matchID := "match-uuid-123"
+		entry.Status = QueueStatusMatched
+		entry.MatchID = &matchID
+
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/matchmaking/status/player-matched", nil)
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d", rr.Code)
+		}
+
+		var res QueueEntry
+		if err := json.NewDecoder(rr.Body).Decode(&res); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+		if res.Status != QueueStatusMatched {
+			t.Errorf("expected status MATCHED, got %s", res.Status)
+		}
+		if res.MatchID == nil || *res.MatchID != matchID {
+			t.Errorf("expected match_id %s, got %v", matchID, res.MatchID)
+		}
+	})
+}

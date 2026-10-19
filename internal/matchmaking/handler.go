@@ -133,10 +133,10 @@ func (h *Handler) handleStatus(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusBadRequest, "missing player id")
 		return
 	}
-	entry, err := h.queueStore.GetActiveByPlayerID(r.Context(), playerID)
+	entry, err := h.queueStore.GetLatestByPlayerID(r.Context(), playerID)
 	if err != nil {
 		if errors.Is(err, ErrQueueEntryNotFound) {
-			h.writeError(w, http.StatusNotFound, "player is not actively queued")
+			h.writeError(w, http.StatusNotFound, "player has no matchmaking history")
 			return
 		}
 		h.logger.Error("failed to fetch queue status", "error", err)

@@ -21,5 +21,6 @@ type QueueEntry struct {
 	JoinedAt    time.Time   `json:"joined_at"`
 	MatchedAt   *time.Time  `json:"matched_at,omitempty"`
 	ExpiresAt   time.Time   `json:"expires_at"`
+	MatchID     *string     `json:"match_id,omitempty"`
 }
 

@@ -92,3 +92,27 @@ func (f *FakeQueueStore) UpdateStatus(ctx context.Context, id string, status Que
 	entry.Status = status
 	return nil
 }
+
+// GetLatestByPlayerID retrieves a player's most recent queue entry from memory.
+func (f *FakeQueueStore) GetLatestByPlayerID(ctx context.Context, playerID string) (*QueueEntry, error) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+
+	if f.ErrToReturn != nil {
+		return nil, f.ErrToReturn
+	}
+
+	var latest *QueueEntry
+	for _, entry := range f.entries {
+		if entry.PlayerID == playerID {
+			if latest == nil || entry.JoinedAt.After(latest.JoinedAt) {
+				latest = entry
+			}
+		}
+	}
+
+	if latest == nil {
+		return nil, ErrQueueEntryNotFound
+	}
+	return latest, nil
+}
