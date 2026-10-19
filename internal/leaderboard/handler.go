@@ -20,8 +20,8 @@ func NewHandler(store LeaderboardStore) *Handler {
 
 // RegisterRoutes wires the leaderboard endpoints into the provided Chi router.
 func (h *Handler) RegisterRoutes(r chi.Router) {
-	r.Get("/leaderboards", h.GetTopPlayers)
-	r.Get("/leaderboards/{player_id}/rank", h.GetPlayerRank)
+	r.Get("/api/v1/leaderboards", h.GetTopPlayers)
+	r.Get("/api/v1/leaderboards/{player_id}/rank", h.GetPlayerRank)
 }
 
 func (h *Handler) GetTopPlayers(w http.ResponseWriter, r *http.Request) {

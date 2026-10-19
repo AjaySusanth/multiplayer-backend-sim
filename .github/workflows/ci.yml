@@ -1,0 +1,41 @@
+name: CI
+on:
+    push:
+        branches: [ main ]
+    pull_request:
+        branches: [ main ]
+
+jobs:
+    test:
+        name: Test & Build
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+            
+            - name: Setup Go
+              uses: actions/setup-go@v4
+              with: 
+                go-version-file: 'go.mod'
+                cache: true
+            
+            - name: Verify Go modules
+              run: go mod verify
+
+            - name: Run go vet
+              run: go vet ./...
+            
+            - name: Run unit tests
+              run: go test -v -race -coverprofile=coverage.out ./internal/...
+
+            - name: Run integration tests
+              run: go test -v -tags=integration ./tests/integration/...
+
+            - name: Build server binary
+              run: CGO_ENABLED=0 go build -o /dev/null ./cmd/server
+
+            - name: Build worker binary
+              run: CGO_ENABLED=0 go build -o /dev/null ./cmd/worker
+            
+            - name: Build Docker image
+              run: docker build -t multiplayer-backend-sim:ci .

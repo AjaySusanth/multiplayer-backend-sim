@@ -18,9 +18,7 @@ func NewHandler(store ResultStore) *Handler {
 }
 
 func (h *Handler) RegisterRoutes(r chi.Router) {
-	// Assuming the router 'r' passed in is already grouped under "/api/v1" 
-	// in main.go, as is standard for these patterns.
-	r.Post("/matches/{match_id}/result", h.SubmitResult)
+	r.Post("/api/v1/matches/{match_id}/result", h.SubmitResult)
 }
 
 type SubmitResultRequest struct {

@@ -19,5 +19,6 @@ type CreateQueueEntryInput struct {
 type QueueStore interface {
 	Create(ctx context.Context, input CreateQueueEntryInput) (*QueueEntry, error)
 	GetActiveByPlayerID(ctx context.Context, playerID string) (*QueueEntry, error)
+	GetLatestByPlayerID(ctx context.Context, playerID string) (*QueueEntry, error)
 	UpdateStatus(ctx context.Context, id string, status QueueStatus) error
 }

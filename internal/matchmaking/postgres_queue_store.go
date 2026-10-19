@@ -94,3 +94,42 @@ func (s *PostgresQueueStore) UpdateStatus(ctx context.Context, id string, status
 	}
 	return nil
 }
+
+func (s *PostgresQueueStore) GetLatestByPlayerID(ctx context.Context, playerID string) (*QueueEntry, error) {
+	query := `
+		SELECT q.id, q.player_id, q.skill_rating, q.region, q.status, q.joined_at, q.matched_at, q.expires_at,
+		       (
+		           SELECT mp.match_id::text
+		           FROM match_players mp
+		           JOIN matches m ON m.id = mp.match_id
+		           WHERE mp.player_id::text = q.player_id::text
+		           ORDER BY mp.joined_at DESC
+		           LIMIT 1
+		       ) AS match_id
+		FROM queue_entries q
+		WHERE q.player_id = $1
+		ORDER BY q.joined_at DESC
+		LIMIT 1
+	`
+
+	var q QueueEntry
+	err := s.pool.QueryRow(ctx, query, playerID).Scan(
+		&q.ID,
+		&q.PlayerID,
+		&q.SkillRating,
+		&q.Region,
+		&q.Status,
+		&q.JoinedAt,
+		&q.MatchedAt,
+		&q.ExpiresAt,
+		&q.MatchID,
+	)
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrQueueEntryNotFound
+		}
+		return nil, fmt.Errorf("querying latest queue entry: %w", err)
+	}
+	return &q, nil
+}

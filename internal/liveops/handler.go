@@ -21,7 +21,7 @@ func NewHandler(store LiveOpsStore) *Handler {
 
 // RegisterRoutes wires the LiveOps and Audit endpoints into the Chi router.
 func (h *Handler) RegisterRoutes(r chi.Router) {
-	r.Route("/liveops", func(r chi.Router) {
+	r.Route("/api/v1/liveops", func(r chi.Router) {
 		r.Post("/configurations", h.CreateConfiguration)
 		r.Get("/configurations", h.ListConfigurations)
 		r.Get("/configurations/active", h.GetActiveConfiguration)
