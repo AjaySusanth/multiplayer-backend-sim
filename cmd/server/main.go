@@ -115,8 +115,8 @@ func main() {
 	leaderboardHandler := leaderboard.NewHandler(leaderboardStore)
 	liveopsHandler := liveops.NewHandler(liveopsStore)
 
-
-	consumer := matchmaking.NewConsumer(redisClient,queueStore,matchStore,logger,"matchmaking_worker_1")
+	configProvider := matchmaking.NewLiveOpsConfigProvider(liveopsStore, logger, 2*time.Second)
+	consumer := matchmaking.NewConsumer(redisClient,queueStore,matchStore,logger,"matchmaking_worker_1").WithConfigProvider(configProvider)
 
 	if err:= consumer.SetupGroup(startupCtx);err!=nil {
 		logger.Error("failed to setup redis consumer group", "error", err)

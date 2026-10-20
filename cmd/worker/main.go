@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"multiplayer-backend-sim/internal/matchmaking"
+	"multiplayer-backend-sim/internal/liveops"
+
 	"os"
 	"os/signal"
 	"syscall"
@@ -78,13 +80,15 @@ func main() {
 	// 5. Initialize Stores and Consumer
 	queueStore := matchmaking.NewPostgresQueueStore(pgPool)
 	matchStore := matchmaking.NewPostgresMatchStore(pgPool)
+	liveopsStore := liveops.NewPostgresLiveOpsStore(pgPool)
+	configProvider := matchmaking.NewLiveOpsConfigProvider(liveopsStore, logger, 2*time.Second)
 	consumer := matchmaking.NewConsumer(
 		redisClient,
 		queueStore,
 		matchStore,
 		logger,
 		workerID,
-	)
+	).WithConfigProvider(configProvider)
 
 	if err := consumer.SetupGroup(ctx); err != nil {
 		logger.Error("failed to setup redis consumer group", "error", err)

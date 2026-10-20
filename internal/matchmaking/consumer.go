@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"time"
 
+	"multiplayer-backend-sim/internal/liveops"
+
 	"github.com/redis/go-redis/v9"
 )
 
@@ -17,12 +19,22 @@ const ConsumerGroupName = "matchmaking_group"
 const StaleMessageTimeout = 5 * time.Second
 
 type Consumer struct {
-	redisClient  *redis.Client
-	queueStore   QueueStore
-	matchStore   MatchStore
-	logger       *slog.Logger
-	consumerName string // unique per worker instance
-	staleTimeout time.Duration
+	redisClient    *redis.Client
+	queueStore     QueueStore
+	matchStore     MatchStore
+	logger         *slog.Logger
+	consumerName   string // unique per worker instance
+	staleTimeout   time.Duration
+	blockTimeout   time.Duration // how long XReadGroup blocks per iteration
+	configProvider ConfigProvider
+}
+
+type staticConfigProvider struct {
+	cfg liveops.MatchmakingConfigPayload
+}
+
+func (s *staticConfigProvider) GetConfig(ctx context.Context) liveops.MatchmakingConfigPayload {
+	return s.cfg
 }
 
 func NewConsumer(
@@ -33,18 +45,36 @@ func NewConsumer(
 	consumerName string, // now injected rather than hardcoded
 ) *Consumer {
 	return &Consumer{
-		redisClient:  redisClient,
-		queueStore:   qs,
-		matchStore:   ms,
-		logger:       logger,
-		consumerName: consumerName,
-		staleTimeout: StaleMessageTimeout,
+		redisClient:    redisClient,
+		queueStore:     qs,
+		matchStore:     ms,
+		logger:         logger,
+		consumerName:   consumerName,
+		staleTimeout:   StaleMessageTimeout,
+		blockTimeout:   2 * time.Second,
+		configProvider: &staticConfigProvider{cfg: DefaultMatchmakingConfig()},
 	}
+}
+
+func (c *Consumer) WithConfigProvider(cp ConfigProvider) *Consumer {
+	if cp != nil {
+		c.configProvider = cp
+	}
+	return c
 }
 
 // WithStaleTimeout overrides the default stale message timeout (useful for tests).
 func (c *Consumer) WithStaleTimeout(d time.Duration) *Consumer {
 	c.staleTimeout = d
+	return c
+}
+
+// WithBlockTimeout overrides how long XReadGroup blocks waiting for new messages.
+// Shorter values mean the loop re-runs XAutoClaim more frequently, which is
+// important in tests where we need the worker to re-evaluate a PEL entry quickly
+// after a LiveOps config change. Production default is 2 s.
+func (c *Consumer) WithBlockTimeout(d time.Duration) *Consumer {
+	c.blockTimeout = d
 	return c
 }
 
@@ -68,8 +98,11 @@ func (c *Consumer) Run(ctx context.Context) {
 		}
 
 		// 1. RECOVERY PATH: Claim any messages that have been sitting
-		// un-ACKed in any consumer's PEL longer than StaleMessageTimeout.
+		// un-ACKed in any consumer's PEL longer than staleTimeout.
 		// This absorbs work from crashed worker instances automatically.
+		// Crucially, it also re-evaluates PEL entries with the *current*
+		// LiveOps config on every loop, which is what makes config-change
+		// rollouts work without requiring new stream messages to arrive.
 		claimed, _, err := c.redisClient.XAutoClaim(ctx, &redis.XAutoClaimArgs{
 			Stream:   MatchmakingStreamKey,
 			Group:    ConsumerGroupName,
@@ -89,16 +122,24 @@ func (c *Consumer) Run(ctx context.Context) {
 		}
 
 		// 2. NORMAL PATH: Read new, never-delivered messages using ">".
+		// Block for at most blockTimeout so the loop can cycle back to
+		// XAutoClaim promptly (important after a config change).
 		streams, err := c.redisClient.XReadGroup(ctx, &redis.XReadGroupArgs{
 			Group:    ConsumerGroupName,
 			Consumer: c.consumerName,
 			Streams:  []string{MatchmakingStreamKey, ">"},
 			Count:    50,
-			Block:    2 * time.Second,
+			Block:    c.blockTimeout,
 		}).Result()
 
 		if err != nil {
-			if errors.Is(err, redis.Nil) || errors.Is(err, context.Canceled) {
+			// redis.Nil means the blocking read timed out with no new messages —
+			// that is normal and expected; just loop back to XAutoClaim.
+			if errors.Is(err, redis.Nil) {
+				continue
+			}
+			// Context cancelled: clean shutdown.
+			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
 				return
 			}
 			c.logger.Error("failed to read from redis stream", "error", err)
@@ -138,22 +179,31 @@ func (c *Consumer) processMessages(ctx context.Context, messages []redis.XMessag
 		messageIDs[job.PlayerID] = msg.ID
 	}
 
-	matches := ProcessBatch(batch)
+	// 1. Retrieve the active LiveOps configuration (cached in memory)
+	cfg := c.configProvider.GetConfig(ctx)
 
-	for _, matchPair := range matches {
-		playerIDs := []string{matchPair[0].PlayerID, matchPair[1].PlayerID}
+	// 2. Pair players according to dynamic MaxSkillDifference and MatchSize
+	matches := ProcessBatch(batch, cfg)
 
-		_, err := c.matchStore.CreateMatch(ctx, matchPair[0].Region, playerIDs)
+	for _, matchGroup := range matches {
+		playerIDs := make([]string, len(matchGroup))
+		for i, job := range matchGroup {
+			playerIDs[i] = job.PlayerID
+		}
+
+		// 3. Atomically persist the match and its participants in PostgreSQL
+		_, err := c.matchStore.CreateMatch(ctx, matchGroup[0].Region, playerIDs)
 		if err != nil {
 			c.logger.Error("failed to create match in postgres", "error", err)
-			// Do NOT ACK — leave in PEL for next recovery cycle
+			// Do NOT ACK — leave in PEL so XAutoClaim can recover it later
 			continue
 		}
 
 		allStatusUpdated := true
 		var msgIDsToAck []string
 
-		for _, job := range matchPair {
+		// 4. Transition each player's ticket status to MATCHED in PostgreSQL
+		for _, job := range matchGroup {
 			activeEntry, err := c.queueStore.GetActiveByPlayerID(ctx, job.PlayerID)
 			if err != nil {
 				c.logger.Error("failed to find active queue entry for player", "player_id", job.PlayerID, "error", err)
@@ -172,13 +222,13 @@ func (c *Consumer) processMessages(ctx context.Context, messages []redis.XMessag
 			}
 		}
 
-		// Only ACK in Redis if all queue status transitions were successfully written to Postgres
+		// 5. Commit acknowledgement in Redis only if all database state was successfully committed
 		if allStatusUpdated && len(msgIDsToAck) > 0 {
 			c.redisClient.XAck(ctx, MatchmakingStreamKey, ConsumerGroupName, msgIDsToAck...)
 		} else {
 			c.logger.Warn("skipped redis XAck because one or more queue status updates failed", "players", playerIDs)
 		}
 
-		c.logger.Info("match created", "region", matchPair[0].Region, "players", playerIDs)
+		c.logger.Info("match created", "region", matchGroup[0].Region, "players", playerIDs, "match_size", len(playerIDs))
 	}
 }

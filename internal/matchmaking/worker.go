@@ -1,12 +1,21 @@
 package matchmaking
 
-import "math"
+import (
+	"math"
 
-// MaxSkillDifference is the maximum allowed Elo gap between two players.
-const MaxSkillDifference = 500
+	"multiplayer-backend-sim/internal/liveops"
+)
 
-// ProcessBatch takes a raw list of pending matchmaking jobs and returns valid, paired matches.
-func ProcessBatch(jobs []MatchMakingJob) [][]MatchMakingJob {
+// ProcessBatch takes a raw list of pending matchmaking jobs and returns valid, grouped matches
+// adhering to the MaxSkillDifference and MatchSize specified in the LiveOps configuration.
+func ProcessBatch(jobs []MatchMakingJob, cfg liveops.MatchmakingConfigPayload) [][]MatchMakingJob {
+	if cfg.MatchSize < 2 {
+		cfg.MatchSize = 2
+	}
+	if cfg.MaxSkillDifference <= 0 {
+		cfg.MaxSkillDifference = 500
+	}
+
 	var successfulMatches [][]MatchMakingJob
 
 	// 1. Group jobs by Region (players can only match within their own region)
@@ -15,38 +24,42 @@ func ProcessBatch(jobs []MatchMakingJob) [][]MatchMakingJob {
 		groupedByRegion[job.Region] = append(groupedByRegion[job.Region], job)
 	}
 
-	// 2. Pair players within each region group
+	// 2. Form groups of size cfg.MatchSize within each region group
 	for _, regionalJobs := range groupedByRegion {
-		
-		// Track which indexes have already been paired so we don't double-match anyone
 		matchedIndexes := make(map[int]bool)
 
 		for i := 0; i < len(regionalJobs); i++ {
 			if matchedIndexes[i] {
-				continue // Player A is already matched
+				continue
 			}
 
-			playerA := regionalJobs[i]
+			seedPlayer := regionalJobs[i]
+			candidateGroup := []MatchMakingJob{seedPlayer}
+			candidateIndexes := []int{i}
 
-			// Look forward in the queue for a compatible partner
+			// Look forward in the queue for compatible partners
 			for j := i + 1; j < len(regionalJobs); j++ {
 				if matchedIndexes[j] {
-					continue // Player B is already matched
+					continue
 				}
 
-				playerB := regionalJobs[j]
+				candidate := regionalJobs[j]
+				skillDiff := math.Abs(float64(seedPlayer.SkillRating - candidate.SkillRating))
+				if skillDiff <= float64(cfg.MaxSkillDifference) {
+					candidateGroup = append(candidateGroup, candidate)
+					candidateIndexes = append(candidateIndexes, j)
 
-				// Constraint: Are their skill ratings close enough?
-				skillDiff := math.Abs(float64(playerA.SkillRating - playerB.SkillRating))
-				if skillDiff <= MaxSkillDifference {
-					
-					// Match found! Pair them up.
-					successfulMatches = append(successfulMatches, []MatchMakingJob{playerA, playerB})
-					
-					// Mark both as matched
-					matchedIndexes[i] = true
-					matchedIndexes[j] = true
-					break // Stop looking for partners for Player A
+					if len(candidateGroup) == cfg.MatchSize {
+						break
+					}
+				}
+			}
+
+			// If a full group was formed, commit the match
+			if len(candidateGroup) == cfg.MatchSize {
+				successfulMatches = append(successfulMatches, candidateGroup)
+				for _, idx := range candidateIndexes {
+					matchedIndexes[idx] = true
 				}
 			}
 		}
