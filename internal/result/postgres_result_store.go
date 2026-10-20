@@ -25,16 +25,18 @@ func (s *PostgresResultStore) SaveResultIdempotent(ctx context.Context, res *Mat
 	}
 	defer tx.Rollback(ctx)
 
-	// 1. Attempt to insert the idempotency key first.
-	// We rely purely on the Postgres unique constraint to prevent duplicates.
+	scopeID := res.PlayerID.String()
+
+	// 1. Attempt to insert the idempotency key first, scoped by the player's ID.
+	// We rely purely on the Postgres unique constraint to prevent duplicate processing.
 	_, err = tx.Exec(ctx, `
-		INSERT INTO idempotency_keys (idempotency_key, operation, response_json)
-		VALUES ($1, $2, $3)
-	`, *res.IdempotencyKey, operation, responseJSON)
+		INSERT INTO idempotency_keys (idempotency_key, operation, scope_id, response_json)
+		VALUES ($1, $2, $3, $4)
+	`, *res.IdempotencyKey, operation, scopeID, responseJSON)
 
 	if err != nil {
 		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" { // unique_violation
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" { // unique_violation on (key, operation, scope_id)
 			// The transaction is now in an aborted state due to the error.
 			// We roll it back explicitly before querying the existing record.
 			tx.Rollback(ctx)
@@ -43,8 +45,8 @@ func (s *PostgresResultStore) SaveResultIdempotent(ctx context.Context, res *Mat
 			selectErr := s.pool.QueryRow(ctx, `
 				SELECT response_json 
 				FROM idempotency_keys 
-				WHERE idempotency_key = $1 AND operation = $2
-			`, *res.IdempotencyKey, operation).Scan(&cachedJSON)
+				WHERE idempotency_key = $1 AND operation = $2 AND scope_id = $3
+			`, *res.IdempotencyKey, operation, scopeID).Scan(&cachedJSON)
 
 			if selectErr != nil {
 				return nil, fmt.Errorf("fetching duplicate idempotency response: %w", selectErr)
@@ -53,20 +55,25 @@ func (s *PostgresResultStore) SaveResultIdempotent(ctx context.Context, res *Mat
 			return &IdempotencyRecord{
 				IdempotencyKey: *res.IdempotencyKey,
 				Operation:      operation,
+				ScopeID:        scopeID,
 				ResponseJSON:   cachedJSON,
 			}, nil
 		}
 		return nil, fmt.Errorf("inserting idempotency key: %w", err)
 	}
 
-	// 2. If the idempotency key was successfully inserted, it's a fresh request.
+	// 2. If the idempotency key was successfully inserted, it's a fresh request from this player.
 	// Proceed to insert the match result within the same transaction.
 	_, err = tx.Exec(ctx, `
 		INSERT INTO match_results (id, match_id, player_id, score, result, submitted_at, idempotency_key)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 	`, res.ID, res.MatchID, res.PlayerID, res.Score, res.Result, res.SubmittedAt, res.IdempotencyKey)
-	
+
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" { // unique_violation on uq_match_results_match_player
+			return nil, ErrResultAlreadySubmitted
+		}
 		return nil, fmt.Errorf("inserting match result: %w", err)
 	}
 

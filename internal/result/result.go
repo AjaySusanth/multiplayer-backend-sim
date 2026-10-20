@@ -3,9 +3,14 @@ package result
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
+)
+
+var (
+	ErrResultAlreadySubmitted = errors.New("a result has already been submitted for this player in this match")
 )
 
 // MatchResult represents the outcome of a match for a specific player.
@@ -23,6 +28,7 @@ type MatchResult struct {
 type IdempotencyRecord struct {
 	IdempotencyKey string          `json:"idempotency_key"`
 	Operation      string          `json:"operation"`
+	ScopeID        string          `json:"scope_id,omitempty"`
 	ResponseJSON   json.RawMessage `json:"response_json"`
 	CreatedAt      time.Time       `json:"created_at"`
 }

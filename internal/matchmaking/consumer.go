@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -17,6 +18,16 @@ const ConsumerGroupName = "matchmaking_group"
 // StaleMessageTimeout is how long a message must sit un-ACKed in a consumer's
 // PEL before another healthy worker is allowed to claim and reprocess it.
 const StaleMessageTimeout = 5 * time.Second
+
+// MaxRetryAttempts is the maximum number of times a matchmaking job will be
+// retried before being acknowledged as a permanent failure / poison message.
+const MaxRetryAttempts = 3
+
+// AttemptKey returns the Redis key used to track delivery/processing attempts
+// for a given stream message ID.
+func AttemptKey(msgID string) string {
+	return fmt.Sprintf("matchmaking:attempts:%s", msgID)
+}
 
 type Consumer struct {
 	redisClient    *redis.Client
@@ -155,6 +166,72 @@ func (c *Consumer) Run(ctx context.Context) {
 	}
 }
 
+// ackAndClearAttempts is the single acknowledgement helper per ARCHITECTURE.md §3:
+// It ACKs messages to remove them from the consumer group's PEL and clears any
+// retry attempt counters tracked at matchmaking:attempts:<msgID>.
+func (c *Consumer) ackAndClearAttempts(ctx context.Context, msgIDs ...string) {
+	if len(msgIDs) == 0 {
+		return
+	}
+	pipe := c.redisClient.Pipeline()
+	pipe.XAck(ctx, MatchmakingStreamKey, ConsumerGroupName, msgIDs...)
+	for _, id := range msgIDs {
+		pipe.Del(ctx, AttemptKey(id))
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		c.logger.Error("failed to ack messages and delete attempt keys", "error", err, "msg_ids", msgIDs)
+	}
+}
+
+// handleProcessingFailure increments the retry attempt counter for each message in a failed match group.
+// If attempts exceed MaxRetryAttempts (3), it records the poison message, ACKs the message to remove
+// it from the PEL (without deleting the stream entry), and cancels active queue entries in Postgres.
+func (c *Consumer) handleProcessingFailure(ctx context.Context, jobs []MatchMakingJob, messageIDs map[string]string, cause error) {
+	for _, job := range jobs {
+		msgID, exists := messageIDs[job.PlayerID]
+		if !exists {
+			continue
+		}
+
+		key := AttemptKey(msgID)
+		attempts, err := c.redisClient.Incr(ctx, key).Result()
+		if err != nil {
+			c.logger.Error("failed to increment retry attempt counter", "msg_id", msgID, "error", err)
+			continue
+		}
+		// Maintain a 24-hour TTL so abandoned attempt keys do not leak memory in Redis
+		_ = c.redisClient.Expire(ctx, key, 24*time.Hour)
+
+		if attempts >= MaxRetryAttempts {
+			c.logger.Error("poison message: retry cap reached, acknowledging from PEL without deleting stream entry",
+				"msg_id", msgID,
+				"player_id", job.PlayerID,
+				"attempts", attempts,
+				"max_attempts", MaxRetryAttempts,
+				"error", cause,
+			)
+
+			// Remove from PEL so it stops blocking worker queues.
+			// The stream entry itself is deliberately left intact for audit/replay per ARCHITECTURE.md §3.
+			c.redisClient.XAck(ctx, MatchmakingStreamKey, ConsumerGroupName, msgID)
+
+			// Transition player's queue entry to CANCELLED so they are not locked indefinitely
+			if activeEntry, qErr := c.queueStore.GetActiveByPlayerID(ctx, job.PlayerID); qErr == nil {
+				_ = c.queueStore.UpdateStatus(ctx, activeEntry.ID, QueueStatusCancelled)
+			}
+		} else {
+			c.logger.Warn("matchmaking job failed, left in PEL for recovery",
+				"msg_id", msgID,
+				"player_id", job.PlayerID,
+				"attempt", attempts,
+				"max_attempts", MaxRetryAttempts,
+				"error", cause,
+			)
+			// Do NOT ACK: left in PEL so XAutoClaim will recover it later
+		}
+	}
+}
+
 // processMessages is the shared processing path for both fresh messages
 // (from XReadGroup ">") and recovered messages (from XAutoClaim).
 func (c *Consumer) processMessages(ctx context.Context, messages []redis.XMessage) {
@@ -165,14 +242,14 @@ func (c *Consumer) processMessages(ctx context.Context, messages []redis.XMessag
 		payloadStr, ok := msg.Values["payload"].(string)
 		if !ok {
 			c.logger.Error("malformed payload in stream", "msg_id", msg.ID)
-			c.redisClient.XAck(ctx, MatchmakingStreamKey, ConsumerGroupName, msg.ID)
+			c.ackAndClearAttempts(ctx, msg.ID)
 			continue
 		}
 
 		var job MatchMakingJob
 		if err := json.Unmarshal([]byte(payloadStr), &job); err != nil {
 			c.logger.Error("failed to unmarshal job", "error", err, "msg_id", msg.ID)
-			c.redisClient.XAck(ctx, MatchmakingStreamKey, ConsumerGroupName, msg.ID)
+			c.ackAndClearAttempts(ctx, msg.ID)
 			continue
 		}
 		batch = append(batch, job)
@@ -195,7 +272,7 @@ func (c *Consumer) processMessages(ctx context.Context, messages []redis.XMessag
 		_, err := c.matchStore.CreateMatch(ctx, matchGroup[0].Region, playerIDs)
 		if err != nil {
 			c.logger.Error("failed to create match in postgres", "error", err)
-			// Do NOT ACK — leave in PEL so XAutoClaim can recover it later
+			c.handleProcessingFailure(ctx, matchGroup, messageIDs, err)
 			continue
 		}
 
@@ -224,9 +301,10 @@ func (c *Consumer) processMessages(ctx context.Context, messages []redis.XMessag
 
 		// 5. Commit acknowledgement in Redis only if all database state was successfully committed
 		if allStatusUpdated && len(msgIDsToAck) > 0 {
-			c.redisClient.XAck(ctx, MatchmakingStreamKey, ConsumerGroupName, msgIDsToAck...)
+			c.ackAndClearAttempts(ctx, msgIDsToAck...)
 		} else {
 			c.logger.Warn("skipped redis XAck because one or more queue status updates failed", "players", playerIDs)
+			c.handleProcessingFailure(ctx, matchGroup, messageIDs, fmt.Errorf("queue status update incomplete"))
 		}
 
 		c.logger.Info("match created", "region", matchGroup[0].Region, "players", playerIDs, "match_size", len(playerIDs))

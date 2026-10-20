@@ -23,15 +23,13 @@ import (
 
 	"multiplayer-backend-sim/internal/config"
 	"multiplayer-backend-sim/internal/health"
-	"multiplayer-backend-sim/internal/matchmaking"
-	"multiplayer-backend-sim/internal/player"
-	"multiplayer-backend-sim/internal/session"
-	"multiplayer-backend-sim/internal/metrics"
-	"multiplayer-backend-sim/internal/result" 
 	"multiplayer-backend-sim/internal/leaderboard"
 	"multiplayer-backend-sim/internal/liveops"
-
-
+	"multiplayer-backend-sim/internal/matchmaking"
+	"multiplayer-backend-sim/internal/metrics"
+	"multiplayer-backend-sim/internal/player"
+	"multiplayer-backend-sim/internal/result"
+	"multiplayer-backend-sim/internal/session"
 )
 
 func main() {
@@ -99,7 +97,6 @@ func main() {
 	resultStore := result.NewPostgresResultStore(dbPool)
 	leaderboardStore := leaderboard.NewPostgresLeaderboardStore(dbPool)
 	liveopsStore := liveops.NewPostgresLiveOpsStore(dbPool)
-	
 
 	playerHandler := player.NewHandler(playerStore, logger)
 	healthHandler := health.NewHandler(dbPool)
@@ -110,21 +107,24 @@ func main() {
 		publisher,
 		logger,
 	)
-	sessionHandler := session.NewHandler(sessionStore,logger)
+	sessionHandler := session.NewHandler(sessionStore, logger)
 	resultHandler := result.NewHandler(resultStore)
 	leaderboardHandler := leaderboard.NewHandler(leaderboardStore)
 	liveopsHandler := liveops.NewHandler(liveopsStore)
 
 	configProvider := matchmaking.NewLiveOpsConfigProvider(liveopsStore, logger, 2*time.Second)
-	consumer := matchmaking.NewConsumer(redisClient,queueStore,matchStore,logger,"matchmaking_worker_1").WithConfigProvider(configProvider)
+	consumer := matchmaking.NewConsumer(redisClient, queueStore, matchStore, logger, "matchmaking_worker_1").WithConfigProvider(configProvider)
 
-	if err:= consumer.SetupGroup(startupCtx);err!=nil {
+	if err := consumer.SetupGroup(startupCtx); err != nil {
 		logger.Error("failed to setup redis consumer group", "error", err)
 		os.Exit(1)
 	}
 
 	workerCtx, workerCancel := context.WithCancel(context.Background())
 	go consumer.Run(workerCtx)
+
+	expiryWorker := matchmaking.NewQueueExpiryWorker(queueStore, logger, 5*time.Second)
+	go expiryWorker.Run(workerCtx)
 
 	// 6. Initialize Chi router and attach standard production middleware
 	r := chi.NewRouter()

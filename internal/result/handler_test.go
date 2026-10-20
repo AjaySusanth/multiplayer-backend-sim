@@ -20,6 +20,7 @@ func TestSubmitResult(t *testing.T) {
 
 	matchID := uuid.New()
 	playerID := uuid.New()
+	secondPlayerID := uuid.New()
 	idemKey := "test-idem-key-123"
 
 	validBody := map[string]interface{}{
@@ -28,6 +29,13 @@ func TestSubmitResult(t *testing.T) {
 		"result":    "WIN",
 	}
 	bodyBytes, _ := json.Marshal(validBody)
+
+	secondPlayerBody := map[string]interface{}{
+		"player_id": secondPlayerID.String(),
+		"score":     80,
+		"result":    "LOSS",
+	}
+	secondPlayerBytes, _ := json.Marshal(secondPlayerBody)
 
 	tests := []struct {
 		name           string
@@ -64,6 +72,20 @@ func TestSubmitResult(t *testing.T) {
 			body:           bodyBytes,
 			expectedStatus: http.StatusBadRequest,
 		},
+		{
+			name:           "error - duplicate submission with different idempotency key returns 409",
+			matchID:        matchID.String(),
+			idempotencyKey: "different-key-789", // different key for same match + player
+			body:           bodyBytes,
+			expectedStatus: http.StatusConflict, // 409
+		},
+		{
+			name:           "success - distinct player using identical key string does not collide",
+			matchID:        matchID.String(),
+			idempotencyKey: idemKey, // same key string as player 1, but player 2 scope
+			body:           secondPlayerBytes,
+			expectedStatus: http.StatusCreated, // 201
+		},
 	}
 
 	for _, tt := range tests {
@@ -75,7 +97,6 @@ func TestSubmitResult(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 
 			rr := httptest.NewRecorder()
-			// Dispatch via Chi router to ensure path param binding works properly
 			r.ServeHTTP(rr, req)
 
 			if rr.Code != tt.expectedStatus {

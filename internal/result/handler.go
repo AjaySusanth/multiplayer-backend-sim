@@ -2,6 +2,7 @@ package result
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
@@ -72,7 +73,10 @@ func (h *Handler) SubmitResult(w http.ResponseWriter, r *http.Request) {
 	// Attempt the check-and-store idempotency flow via our transactional store.
 	cachedRecord, err := h.store.SaveResultIdempotent(r.Context(), matchResult, "POST_MATCH_RESULT", responseBytes)
 	if err != nil {
-		// (In a real setup we would use log/slog here before returning 500)
+		if errors.Is(err, ErrResultAlreadySubmitted) {
+			http.Error(w, "result already submitted for this match", http.StatusConflict)
+			return
+		}
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}

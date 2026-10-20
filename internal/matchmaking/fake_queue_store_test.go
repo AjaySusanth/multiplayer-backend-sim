@@ -38,6 +38,11 @@ func (f *FakeQueueStore) Create(ctx context.Context, input CreateQueueEntryInput
 		}
 	}
 
+	ttl := input.TTL
+	if ttl == 0 {
+		ttl = 5 * time.Minute
+	}
+
 	f.nextID++
 	id := fmt.Sprintf("queue-entry-%d", f.nextID)
 	now := time.Now().UTC()
@@ -49,7 +54,7 @@ func (f *FakeQueueStore) Create(ctx context.Context, input CreateQueueEntryInput
 		Region:      input.Region,
 		Status:      QueueStatusQueued,
 		JoinedAt:    now,
-		ExpiresAt:   now.Add(5 * time.Minute),
+		ExpiresAt:   now.Add(ttl),
 	}
 
 	f.entries[id] = q
@@ -91,6 +96,25 @@ func (f *FakeQueueStore) UpdateStatus(ctx context.Context, id string, status Que
 	// Modify the pointer directly to update the state in the map
 	entry.Status = status
 	return nil
+}
+
+// ExpireStaleEntries transitions entries in QUEUED status whose ExpiresAt <= cutoff to EXPIRED.
+func (f *FakeQueueStore) ExpireStaleEntries(ctx context.Context, cutoff time.Time) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.ErrToReturn != nil {
+		return 0, f.ErrToReturn
+	}
+
+	var count int64
+	for _, entry := range f.entries {
+		if entry.Status == QueueStatusQueued && (entry.ExpiresAt.Before(cutoff) || entry.ExpiresAt.Equal(cutoff)) {
+			entry.Status = QueueStatusExpired
+			count++
+		}
+	}
+	return count, nil
 }
 
 // GetLatestByPlayerID retrieves a player's most recent queue entry from memory.

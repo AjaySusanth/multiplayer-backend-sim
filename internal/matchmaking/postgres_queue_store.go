@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
-
 
 const pgErrUniqueViolation = "23505"
 
@@ -18,19 +18,24 @@ type PostgresQueueStore struct {
 }
 
 func NewPostgresQueueStore(pool *pgxpool.Pool) *PostgresQueueStore {
-	return  &PostgresQueueStore{
+	return &PostgresQueueStore{
 		pool: pool,
 	}
 }
 
-func (s *PostgresQueueStore) Create(ctx context.Context,input CreateQueueEntryInput) (*QueueEntry,error) {
-	expiresAt :=time.Now().UTC().Add(5*time.Minute)
-	query:= `INSERT INTO queue_entries (player_id, skill_rating, region, expires_at)
+func (s *PostgresQueueStore) Create(ctx context.Context, input CreateQueueEntryInput) (*QueueEntry, error) {
+	ttl := input.TTL
+	if ttl == 0 {
+		ttl = 5 * time.Minute
+	}
+	expiresAt := time.Now().UTC().Add(ttl)
+
+	query := `INSERT INTO queue_entries (player_id, skill_rating, region, expires_at)
 		VALUES ($1, $2, $3, $4)
 		RETURNING id, player_id, skill_rating, region, status, joined_at, matched_at, expires_at`
 
 	var q QueueEntry
-	err:=s.pool.QueryRow(ctx,query,input.PlayerID,input.SkillRating, input.Region, expiresAt).Scan(
+	err := s.pool.QueryRow(ctx, query, input.PlayerID, input.SkillRating, input.Region, expiresAt).Scan(
 		&q.ID,
 		&q.PlayerID,
 		&q.SkillRating,
@@ -40,18 +45,18 @@ func (s *PostgresQueueStore) Create(ctx context.Context,input CreateQueueEntryIn
 		&q.MatchedAt,
 		&q.ExpiresAt,
 	)
-	if err!= nil {
+	if err != nil {
 		var pgErr *pgconn.PgError
-		if errors.As(err,&pgErr) && pgErr.Code == pgErrUniqueViolation {
+		if errors.As(err, &pgErr) && pgErr.Code == pgErrUniqueViolation {
 			return nil, ErrPlayerAlreadyInQueue
 		}
 
 		return nil, fmt.Errorf("inserting queue entry: %w", err)
 	}
-	return &q,nil
+	return &q, nil
 }
 
-func (s *PostgresQueueStore) GetActiveByPlayerID(ctx context.Context,playerID string) (*QueueEntry,error) {
+func (s *PostgresQueueStore) GetActiveByPlayerID(ctx context.Context, playerID string) (*QueueEntry, error) {
 	query := `
 		SELECT id, player_id, skill_rating, region, status, joined_at, matched_at, expires_at FROM queue_entries
 		WHERE player_id = $1 and status = 'QUEUED'
@@ -59,7 +64,7 @@ func (s *PostgresQueueStore) GetActiveByPlayerID(ctx context.Context,playerID st
 
 	var q QueueEntry
 
-	err := s.pool.QueryRow(ctx,query,playerID).Scan(
+	err := s.pool.QueryRow(ctx, query, playerID).Scan(
 		&q.ID,
 		&q.PlayerID,
 		&q.SkillRating,
@@ -70,13 +75,13 @@ func (s *PostgresQueueStore) GetActiveByPlayerID(ctx context.Context,playerID st
 		&q.ExpiresAt,
 	)
 
-	if err!=nil {
-		if errors.Is(err,pgx.ErrNoRows) {
-			return nil,ErrQueueEntryNotFound
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrQueueEntryNotFound
 		}
 		return nil, fmt.Errorf("querying active queue entry: %w", err)
 	}
-	return &q,nil
+	return &q, nil
 }
 
 func (s *PostgresQueueStore) UpdateStatus(ctx context.Context, id string, status QueueStatus) error {
@@ -93,6 +98,19 @@ func (s *PostgresQueueStore) UpdateStatus(ctx context.Context, id string, status
 		return ErrQueueEntryNotFound
 	}
 	return nil
+}
+
+func (s *PostgresQueueStore) ExpireStaleEntries(ctx context.Context, cutoff time.Time) (int64, error) {
+	query := `
+		UPDATE queue_entries
+		SET status = 'EXPIRED'
+		WHERE status = 'QUEUED' AND expires_at <= $1
+	`
+	tag, err := s.pool.Exec(ctx, query, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("expiring stale queue entries: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 func (s *PostgresQueueStore) GetLatestByPlayerID(ctx context.Context, playerID string) (*QueueEntry, error) {

@@ -14,12 +14,14 @@ import (
 type FakeResultStore struct {
 	mu               sync.Mutex
 	results          map[uuid.UUID]*MatchResult
+	matchPlayerMap   map[string]bool // tracks "matchID:playerID" for uniqueness
 	idempotencyCache map[string]*IdempotencyRecord
 }
 
 func NewFakeResultStore() *FakeResultStore {
 	return &FakeResultStore{
 		results:          make(map[uuid.UUID]*MatchResult),
+		matchPlayerMap:   make(map[string]bool),
 		idempotencyCache: make(map[string]*IdempotencyRecord),
 	}
 }
@@ -32,20 +34,29 @@ func (s *FakeResultStore) SaveResultIdempotent(ctx context.Context, res *MatchRe
 		return nil, fmt.Errorf("idempotency key is required")
 	}
 
-	// Create a composite key for our in-memory map to mirror the (key, operation) 
-	// primary key in Postgres.
-	cacheKey := fmt.Sprintf("%s|%s", *res.IdempotencyKey, operation)
+	scopeID := res.PlayerID.String()
 
-	// Simulate hitting the unique constraint and fetching the existing response
+	// Create a composite key to mirror the (key, operation, scope_id) primary key in Postgres.
+	cacheKey := fmt.Sprintf("%s|%s|%s", *res.IdempotencyKey, operation, scopeID)
+
+	// Simulate hitting the idempotency unique constraint and returning the cached response
 	if existing, found := s.idempotencyCache[cacheKey]; found {
 		return existing, nil
 	}
 
-	// Simulate the successful transaction: saving both the idempotency response
-	// and the match result simultaneously.
+	// Simulate the uq_match_results_match_player constraint:
+	// A different key cannot submit a second result for the same match and player.
+	matchPlayerKey := fmt.Sprintf("%s:%s", res.MatchID.String(), scopeID)
+	if s.matchPlayerMap[matchPlayerKey] {
+		return nil, ErrResultAlreadySubmitted
+	}
+
+	// Fresh submission
+	s.matchPlayerMap[matchPlayerKey] = true
 	s.idempotencyCache[cacheKey] = &IdempotencyRecord{
 		IdempotencyKey: *res.IdempotencyKey,
 		Operation:      operation,
+		ScopeID:        scopeID,
 		ResponseJSON:   responseJSON,
 	}
 

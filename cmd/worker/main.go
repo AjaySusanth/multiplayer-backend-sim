@@ -3,9 +3,8 @@ package main
 import (
 	"context"
 	"log/slog"
-	"multiplayer-backend-sim/internal/matchmaking"
 	"multiplayer-backend-sim/internal/liveops"
-
+	"multiplayer-backend-sim/internal/matchmaking"
 	"os"
 	"os/signal"
 	"syscall"
@@ -15,7 +14,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
-
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -40,10 +38,10 @@ func main() {
 		workerID = "worker-" + uuid.New().String()[:8]
 	}
 
-	ctx,cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	poolConfig,err :=pgxpool.ParseConfig(dbURL)
+	poolConfig, err := pgxpool.ParseConfig(dbURL)
 	if err != nil {
 		logger.Error("failed to parse database config", "error", err)
 		os.Exit(1)
@@ -51,22 +49,21 @@ func main() {
 
 	poolConfig.MaxConns = 10
 
-	pgPool,err := pgxpool.NewWithConfig(ctx,poolConfig)
+	pgPool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
 		logger.Error("failed to connect to database pool", "error", err)
 		os.Exit(1)
 	}
-
 	defer pgPool.Close()
 
-	if err:= pgPool.Ping(ctx);err != nil {
+	if err := pgPool.Ping(ctx); err != nil {
 		logger.Error("failed to ping database", "error", err)
 		os.Exit(1)
 	}
 
 	logger.Info("connected to postgresql")
 
-	redisOpts,err := redis.ParseURL(redisURL)
+	redisOpts, err := redis.ParseURL(redisURL)
 	if err != nil {
 		logger.Error("failed to parse redis url", "error", err)
 		os.Exit(1)
@@ -75,9 +72,9 @@ func main() {
 	redisClient := redis.NewClient(redisOpts)
 	defer redisClient.Close()
 
-
 	logger.Info("connected to redis")
-	// 5. Initialize Stores and Consumer
+
+	// 5. Initialize Stores, ConfigProvider, Consumer, and ExpiryWorker
 	queueStore := matchmaking.NewPostgresQueueStore(pgPool)
 	matchStore := matchmaking.NewPostgresMatchStore(pgPool)
 	liveopsStore := liveops.NewPostgresLiveOpsStore(pgPool)
@@ -95,28 +92,45 @@ func main() {
 		os.Exit(1)
 	}
 
-	sigChan := make(chan os.Signal,1)
-	signal.Notify(sigChan,os.Interrupt,syscall.SIGTERM)
+	expiryWorker := matchmaking.NewQueueExpiryWorker(queueStore, logger, 2*time.Second)
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
 	workerDone := make(chan struct{})
-	go func ()  {
+	go func() {
 		defer close(workerDone)
 		consumer.Run(ctx)
 	}()
 
-	logger.Info("matchmaking worker is running and processing jobs", "worker_id", workerID)
+	expiryDone := make(chan struct{})
+	go func() {
+		defer close(expiryDone)
+		expiryWorker.Run(ctx)
+	}()
+
+	logger.Info("matchmaking worker and expiry loop are running", "worker_id", workerID)
+
 	// Wait for shutdown signal
 	sig := <-sigChan
 	logger.Info("shutdown signal received, draining worker...", "signal", sig.String())
-	// Cancel context to initiate graceful shutdown
-	cancel()
 
+	// Cancel context to initiate graceful shutdown across all workers
+	cancel()
 
 	select {
 	case <-workerDone:
-		logger.Info("worker loop terminated cleanly")
+		logger.Info("consumer loop terminated cleanly")
 	case <-time.After(10 * time.Second):
-		logger.Warn("worker shutdown timed out, forcing exit")
+		logger.Warn("consumer shutdown timed out, forcing exit")
 	}
+
+	select {
+	case <-expiryDone:
+		logger.Info("expiry loop terminated cleanly")
+	case <-time.After(5 * time.Second):
+		logger.Warn("expiry shutdown timed out, forcing exit")
+	}
+
 	logger.Info("matchmaking worker shutdown complete")
 }
