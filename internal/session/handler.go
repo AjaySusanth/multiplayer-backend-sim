@@ -1,41 +1,51 @@
 package session
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
-	"sync"
+
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
 )
 
 var upgrader = websocket.Upgrader{
-	ReadBufferSize: 1024,
+	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
-	CheckOrigin: func(r *http.Request) bool {return true},
+	CheckOrigin:     func(r *http.Request) bool { return true },
 }
 
 type Handler struct {
 	sessionStore SessionStore
-	logger *slog.Logger
-
-	activeRooms map[string]*Room
-	roomsMu sync.Mutex	
+	roomManager  *RoomManager
+	logger       *slog.Logger
 }
 
 func NewHandler(sessionStore SessionStore, logger *slog.Logger) *Handler {
 	return &Handler{
 		sessionStore: sessionStore,
-		logger: logger,
-		activeRooms: make(map[string]*Room),
+		roomManager:  NewRoomManager(context.Background(), logger),
+		logger:       logger,
 	}
 }
 
-func(h *Handler) RegisterRoutes(r chi.Router) {
-	r.Get("/ws/session/{session_id}",h.handleWebSocket)
+func (h *Handler) WithRoomManager(rm *RoomManager) *Handler {
+	if rm != nil {
+		h.roomManager = rm
+	}
+	return h
 }
 
-func (h *Handler) handleWebSocket(w http.ResponseWriter,r *http.Request) {
-	sessionID := chi.URLParam(r,"session_id")
+func (h *Handler) RoomManager() *RoomManager {
+	return h.roomManager
+}
+
+func (h *Handler) RegisterRoutes(r chi.Router) {
+	r.Get("/ws/session/{session_id}", h.handleWebSocket)
+}
+
+func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	sessionID := chi.URLParam(r, "session_id")
 	playerID := r.URL.Query().Get("player_id")
 
 	if sessionID == "" || playerID == "" {
@@ -58,21 +68,21 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter,r *http.Request) {
 		return
 	}
 
-	h.roomsMu.Lock()
-	room,exists := h.activeRooms[sessionID]
-	if !exists {
-		room = NewRoom(sessionID,gameSession.MatchID,h.logger)
-		h.activeRooms[sessionID] = room
-		go room.Run(r.Context())
-	}
-	h.roomsMu.Unlock()
+	room := h.roomManager.GetOrCreate(sessionID, gameSession.MatchID)
 
 	client := &Client{
 		PlayerID: playerID,
-		Send: make(chan []byte,256),
+		Send:     make(chan []byte, 256),
 	}
 
-	room.Register <- client
-	go client.RunReadPump(conn,room,h.logger)
+	select {
+	case room.Register <- client:
+	case <-room.Done():
+		http.Error(w, "session room is already closed", http.StatusGone)
+		conn.Close()
+		return
+	}
+
+	go client.RunReadPump(conn, room, h.logger)
 	go client.RunWritePump(conn)
 }
