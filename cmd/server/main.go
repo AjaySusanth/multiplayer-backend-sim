@@ -107,7 +107,7 @@ func main() {
 		publisher,
 		logger,
 	)
-	sessionHandler := session.NewHandler(sessionStore, logger)
+	sessionHandler := session.NewHandler(sessionStore, matchStore, logger)
 	resultHandler := result.NewHandler(resultStore)
 	leaderboardHandler := leaderboard.NewHandler(leaderboardStore)
 	liveopsHandler := liveops.NewHandler(liveopsStore)

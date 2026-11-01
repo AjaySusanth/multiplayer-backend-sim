@@ -1,10 +1,14 @@
 package metrics
 
 import (
+	"sync"
+
 	"github.com/prometheus/client_golang/prometheus"
 )
 
 var (
+	initOnce sync.Once
+
 	// ActiveMatches is a Gauge that goes up and down as rooms start and stop.
 	ActiveMatches = prometheus.NewGauge(
 		prometheus.GaugeOpts{
@@ -34,9 +38,11 @@ var (
 )
 
 // Init registers all custom metrics with the default Prometheus registry.
-// This must be called exactly once during server startup.
+// This is guarded by sync.Once to ensure idempotent registration across tests and server runs.
 func Init() {
-	prometheus.MustRegister(ActiveMatches)
-	prometheus.MustRegister(QueueSize)
-	prometheus.MustRegister(HTTPRequestDuration)
+	initOnce.Do(func() {
+		prometheus.MustRegister(ActiveMatches)
+		prometheus.MustRegister(QueueSize)
+		prometheus.MustRegister(HTTPRequestDuration)
+	})
 }

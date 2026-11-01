@@ -16,4 +16,7 @@ type MatchStore interface {
 
 	// GetByID retrieves a match and its participants by ID.
 	GetByID(ctx context.Context, matchID string) (*Match, error)
+
+	// IsPlayerInMatch checks whether a player is an assigned participant in the given match.
+	IsPlayerInMatch(ctx context.Context, matchID, playerID string) (bool, error)
 }

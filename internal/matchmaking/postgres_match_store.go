@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -176,4 +177,26 @@ func (s *PostgresMatchStore) GetByID(ctx context.Context, matchID string) (*Matc
 		return nil, fmt.Errorf("iterating match players: %w", err)
 	}
 	return &m, nil
+}
+
+// IsPlayerInMatch checks whether a player is an assigned participant in the given match.
+func (s *PostgresMatchStore) IsPlayerInMatch(ctx context.Context, matchID, playerID string) (bool, error) {
+	query := `
+		SELECT EXISTS(
+			SELECT 1
+			FROM match_players
+			WHERE match_id = $1 AND player_id = $2
+		)
+	`
+	var exists bool
+	err := s.pool.QueryRow(ctx, query, matchID, playerID).Scan(&exists)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "22P02" {
+			// Invalid UUID syntax means the player or match cannot exist in match_players
+			return false, nil
+		}
+		return false, fmt.Errorf("checking match membership: %w", err)
+	}
+	return exists, nil
 }

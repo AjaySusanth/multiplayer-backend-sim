@@ -67,3 +67,42 @@ func (f *FakeSessionStore) SeedSession(s *GameSession) {
 	defer f.mu.Unlock()
 	f.sessions[s.ID] = s
 }
+
+type FakeMatchChecker struct {
+	mu      sync.RWMutex
+	members map[string]map[string]bool
+	err     error
+}
+
+func NewFakeMatchChecker() *FakeMatchChecker {
+	return &FakeMatchChecker{
+		members: make(map[string]map[string]bool),
+	}
+}
+
+func (f *FakeMatchChecker) AddMember(matchID, playerID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.members[matchID] == nil {
+		f.members[matchID] = make(map[string]bool)
+	}
+	f.members[matchID][playerID] = true
+}
+
+func (f *FakeMatchChecker) SetError(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.err = err
+}
+
+func (f *FakeMatchChecker) IsPlayerInMatch(ctx context.Context, matchID, playerID string) (bool, error) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	if f.err != nil {
+		return false, f.err
+	}
+	if f.members[matchID] == nil {
+		return false, nil
+	}
+	return f.members[matchID][playerID], nil
+}

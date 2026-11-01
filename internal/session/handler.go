@@ -15,15 +15,22 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin:     func(r *http.Request) bool { return true },
 }
 
+// MatchChecker defines the dependency needed to verify player match membership.
+type MatchChecker interface {
+	IsPlayerInMatch(ctx context.Context, matchID, playerID string) (bool, error)
+}
+
 type Handler struct {
 	sessionStore SessionStore
+	matchChecker MatchChecker
 	roomManager  *RoomManager
 	logger       *slog.Logger
 }
 
-func NewHandler(sessionStore SessionStore, logger *slog.Logger) *Handler {
+func NewHandler(sessionStore SessionStore, matchChecker MatchChecker, logger *slog.Logger) *Handler {
 	return &Handler{
 		sessionStore: sessionStore,
+		matchChecker: matchChecker,
 		roomManager:  NewRoomManager(context.Background(), logger),
 		logger:       logger,
 	}
@@ -60,6 +67,20 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if gameSession.Status != SessionStatusStarting && gameSession.Status != SessionStatusInProgress {
 		http.Error(w, "session is no longer active", http.StatusForbidden)
 		return
+	}
+
+	if h.matchChecker != nil {
+		isMember, err := h.matchChecker.IsPlayerInMatch(r.Context(), gameSession.MatchID, playerID)
+		if err != nil {
+			h.logger.Error("failed to verify match membership", "error", err, "match_id", gameSession.MatchID, "player_id", playerID)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		if !isMember {
+			h.logger.Warn("player rejected from websocket session: not a member of match", "match_id", gameSession.MatchID, "player_id", playerID)
+			http.Error(w, "forbidden: player is not a member of this match", http.StatusForbidden)
+			return
+		}
 	}
 
 	conn, err := upgrader.Upgrade(w, r, nil)

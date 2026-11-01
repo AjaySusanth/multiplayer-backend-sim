@@ -70,3 +70,25 @@ func (f *FakeMatchStore) GetByID(ctx context.Context, matchID string) (*Match, e
 
 	return m, nil
 }
+
+// IsPlayerInMatch checks whether a player is an assigned participant in the given match in memory.
+func (f *FakeMatchStore) IsPlayerInMatch(ctx context.Context, matchID, playerID string) (bool, error) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+
+	if f.ErrToReturn != nil {
+		return false, f.ErrToReturn
+	}
+
+	m, ok := f.matches[matchID]
+	if !ok {
+		return false, nil
+	}
+
+	for _, p := range m.Players {
+		if p.PlayerID == playerID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
