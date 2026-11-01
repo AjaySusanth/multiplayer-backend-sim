@@ -3,45 +3,36 @@ package main
 import (
 	"context"
 	"log/slog"
-	"multiplayer-backend-sim/internal/liveops"
-	"multiplayer-backend-sim/internal/matchmaking"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	"github.com/google/uuid"
+	"multiplayer-backend-sim/internal/config"
+	"multiplayer-backend-sim/internal/liveops"
+	"multiplayer-backend-sim/internal/matchmaking"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
 
 func main() {
+	cfg := config.Load()
+
+	var logLevel slog.Level
+	if err := logLevel.UnmarshalText([]byte(cfg.LogLevel)); err != nil {
+		logLevel = slog.LevelInfo
+	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
+		Level: logLevel,
 	}))
 
-	logger.Info("starting matchmaking worker daemon")
-
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		dbURL = "postgres://postgres:postgres@localhost:5432/multiplayer_sim?sslmode=disable"
-	}
-
-	redisURL := os.Getenv("REDIS_URL")
-	if redisURL == "" {
-		redisURL = "redis://localhost:6379/0"
-	}
-
-	workerID := os.Getenv("WORKER_ID")
-	if workerID == "" {
-		// Unique identity per worker instance for Redis Consumer Group PEL tracking
-		workerID = "worker-" + uuid.New().String()[:8]
-	}
+	logger.Info("starting matchmaking worker daemon", "worker_id", cfg.WorkerID)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	poolConfig, err := pgxpool.ParseConfig(dbURL)
+	poolConfig, err := pgxpool.ParseConfig(cfg.DatabaseURL)
 	if err != nil {
 		logger.Error("failed to parse database config", "error", err)
 		os.Exit(1)
@@ -63,7 +54,7 @@ func main() {
 
 	logger.Info("connected to postgresql")
 
-	redisOpts, err := redis.ParseURL(redisURL)
+	redisOpts, err := redis.ParseURL(cfg.RedisURL)
 	if err != nil {
 		logger.Error("failed to parse redis url", "error", err)
 		os.Exit(1)
@@ -84,7 +75,7 @@ func main() {
 		queueStore,
 		matchStore,
 		logger,
-		workerID,
+		cfg.WorkerID,
 	).WithConfigProvider(configProvider)
 
 	if err := consumer.SetupGroup(ctx); err != nil {
@@ -109,7 +100,7 @@ func main() {
 		expiryWorker.Run(ctx)
 	}()
 
-	logger.Info("matchmaking worker and expiry loop are running", "worker_id", workerID)
+	logger.Info("matchmaking worker and expiry loop are running", "worker_id", cfg.WorkerID)
 
 	// Wait for shutdown signal
 	sig := <-sigChan

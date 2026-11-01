@@ -112,20 +112,6 @@ func main() {
 	leaderboardHandler := leaderboard.NewHandler(leaderboardStore)
 	liveopsHandler := liveops.NewHandler(liveopsStore)
 
-	configProvider := matchmaking.NewLiveOpsConfigProvider(liveopsStore, logger, 2*time.Second)
-	consumer := matchmaking.NewConsumer(redisClient, queueStore, matchStore, logger, "matchmaking_worker_1").WithConfigProvider(configProvider)
-
-	if err := consumer.SetupGroup(startupCtx); err != nil {
-		logger.Error("failed to setup redis consumer group", "error", err)
-		os.Exit(1)
-	}
-
-	workerCtx, workerCancel := context.WithCancel(context.Background())
-	go consumer.Run(workerCtx)
-
-	expiryWorker := matchmaking.NewQueueExpiryWorker(queueStore, logger, 5*time.Second)
-	go expiryWorker.Run(workerCtx)
-
 	// 6. Initialize Chi router and attach standard production middleware
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -172,8 +158,6 @@ func main() {
 		}
 	case sig := <-shutdown:
 		logger.Info("shutdown signal received, initiating graceful shutdown", "signal", sig.String())
-
-		workerCancel()
 
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer shutdownCancel()
