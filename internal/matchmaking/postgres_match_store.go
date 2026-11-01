@@ -4,11 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
-
-
 
 type PostgresMatchStore struct {
 	pool *pgxpool.Pool
@@ -72,7 +71,25 @@ func (s *PostgresMatchStore) CreateMatch(ctx context.Context, region string, pla
 		return nil, ErrPlayerAlreadyInMatch
 	}
 
-	// 2. No active match exists for these players — create a new one
+	// 2. Atomically transition the queue tickets from QUEUED to MATCHED.
+	// This acts as a strict concurrency guard against QueueExpiryWorker:
+	// if a ticket was expired or cancelled between batch formation and this transaction,
+	// fewer than len(playerIDs) rows will match 'status = QUEUED'.
+	// In that case, we abort and roll back, guaranteeing no partial or invalid match is created.
+	updateQueueQuery := `
+		UPDATE queue_entries
+		SET status = 'MATCHED', matched_at = NOW()
+		WHERE player_id = ANY($1) AND status = 'QUEUED'
+	`
+	tag, err := tx.Exec(ctx, updateQueueQuery, playerIDs)
+	if err != nil {
+		return nil, fmt.Errorf("transitioning queue entries to MATCHED: %w", err)
+	}
+	if tag.RowsAffected() != int64(len(playerIDs)) {
+		return nil, ErrQueueTicketNotQueued
+	}
+
+	// 3. Persist match and match participants within the same transaction
 	m := &Match{
 		Region:  region,
 		Players: make([]MatchPlayer, 0, len(playerIDs)),
@@ -108,7 +125,7 @@ func (s *PostgresMatchStore) CreateMatch(ctx context.Context, region string, pla
 	return m, nil
 }
 
-func (s *PostgresMatchStore) GetByID (ctx context.Context,matchID string) (*Match,error) {
+func (s *PostgresMatchStore) GetByID(ctx context.Context, matchID string) (*Match, error) {
 	matchQuery := `
 		SELECT id, status, region, created_at, started_at, completed_at
 		FROM matches
@@ -136,18 +153,17 @@ func (s *PostgresMatchStore) GetByID (ctx context.Context,matchID string) (*Matc
 		WHERE match_id = $1
 	`
 
-	rows,err := s.pool.Query(ctx,playersQuery,matchID)
-	if err!= nil {
+	rows, err := s.pool.Query(ctx, playersQuery, matchID)
+	if err != nil {
 		return nil, fmt.Errorf("querying match players: %w", err)
 	}
-
 	defer rows.Close()
 
 	for rows.Next() {
 		var mp MatchPlayer
-		var team *string //*string means "string or nil"
+		var team *string
 
-		if err:= rows.Scan(&mp.PlayerID, &team, &mp.JoinedAt, &mp.LeftAt); err != nil {
+		if err := rows.Scan(&mp.PlayerID, &team, &mp.JoinedAt, &mp.LeftAt); err != nil {
 			return nil, fmt.Errorf("scanning match player: %w", err)
 		}
 
@@ -159,5 +175,5 @@ func (s *PostgresMatchStore) GetByID (ctx context.Context,matchID string) (*Matc
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterating match players: %w", err)
 	}
-	return &m,nil
+	return &m, nil
 }

@@ -268,43 +268,43 @@ func (c *Consumer) processMessages(ctx context.Context, messages []redis.XMessag
 			playerIDs[i] = job.PlayerID
 		}
 
-		// 3. Atomically persist the match and its participants in PostgreSQL
+		// 3. Atomically persist the match, participants, and MATCHED ticket status in PostgreSQL
 		_, err := c.matchStore.CreateMatch(ctx, matchGroup[0].Region, playerIDs)
 		if err != nil {
+			if errors.Is(err, ErrQueueTicketNotQueued) {
+				c.logger.Warn("match creation aborted: one or more queue tickets are no longer QUEUED", "players", playerIDs)
+				hasExpiredOrCancelled := false
+				for _, job := range matchGroup {
+					entry, qErr := c.queueStore.GetLatestByPlayerID(ctx, job.PlayerID)
+					msgID, hasMsg := messageIDs[job.PlayerID]
+					if qErr == nil && (entry.Status == QueueStatusExpired || entry.Status == QueueStatusCancelled) {
+						hasExpiredOrCancelled = true
+						if hasMsg {
+							c.ackAndClearAttempts(ctx, msgID)
+						}
+					}
+				}
+				if !hasExpiredOrCancelled {
+					c.handleProcessingFailure(ctx, matchGroup, messageIDs, err)
+				}
+				continue
+			}
+
 			c.logger.Error("failed to create match in postgres", "error", err)
 			c.handleProcessingFailure(ctx, matchGroup, messageIDs, err)
 			continue
 		}
 
-		allStatusUpdated := true
+		// 4. Since CreateMatch committed the match and transitioned tickets atomically,
+		// acknowledge messages in Redis and clear any attempt tracking.
 		var msgIDsToAck []string
-
-		// 4. Transition each player's ticket status to MATCHED in PostgreSQL
 		for _, job := range matchGroup {
-			activeEntry, err := c.queueStore.GetActiveByPlayerID(ctx, job.PlayerID)
-			if err != nil {
-				c.logger.Error("failed to find active queue entry for player", "player_id", job.PlayerID, "error", err)
-				allStatusUpdated = false
-				continue
-			}
-
-			if err := c.queueStore.UpdateStatus(ctx, activeEntry.ID, QueueStatusMatched); err != nil {
-				c.logger.Error("failed to update queue entry status to MATCHED", "entry_id", activeEntry.ID, "player_id", job.PlayerID, "error", err)
-				allStatusUpdated = false
-				continue
-			}
-
 			if msgID, exists := messageIDs[job.PlayerID]; exists {
 				msgIDsToAck = append(msgIDsToAck, msgID)
 			}
 		}
-
-		// 5. Commit acknowledgement in Redis only if all database state was successfully committed
-		if allStatusUpdated && len(msgIDsToAck) > 0 {
+		if len(msgIDsToAck) > 0 {
 			c.ackAndClearAttempts(ctx, msgIDsToAck...)
-		} else {
-			c.logger.Warn("skipped redis XAck because one or more queue status updates failed", "players", playerIDs)
-			c.handleProcessingFailure(ctx, matchGroup, messageIDs, fmt.Errorf("queue status update incomplete"))
 		}
 
 		c.logger.Info("match created", "region", matchGroup[0].Region, "players", playerIDs, "match_size", len(playerIDs))
