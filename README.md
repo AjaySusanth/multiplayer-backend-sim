@@ -49,10 +49,10 @@ This platform simulates the complete backend lifecycle of a multiplayer game: pl
    - Idempotent match creation protecting against duplicate match assignments if workers crash mid-flight.
 4. **Real-Time Game Sessions (`internal/session`)**:
    - 10Hz in-memory tag simulation engine over WebSockets (`/ws/session/{session_id}`).
-   - Tick broadcast loop and player movement input synchronization.
+   - Tick broadcast loop, server-authoritative physics, and forfeit handling.
 5. **Idempotent Match Results (`internal/result`)**:
    - Outcome reporting with strict `Idempotency-Key` header enforcement.
-   - Atomic check-and-store pattern backed by PostgreSQL unique constraint (`23505`) to safely return cached responses on retries.
+   - Server-authoritative result persistence directly from session rooms upon round completion or forfeit; internal-only HTTP endpoint protected by `X-Internal-Secret` header authorization with PostgreSQL unique constraint (`23505`) check-and-store pattern.
 6. **Relational Leaderboard (`internal/leaderboard`)**:
    - Score aggregation and ranking pushed directly to PostgreSQL using Common Table Expressions (CTEs) and `RANK() OVER (ORDER BY SUM(score) DESC)`.
 7. **LiveOps & Audit Trail (`internal/liveops`)**:
@@ -103,13 +103,23 @@ go test -v ./internal/...
 ```
 
 ### Integration Tests (Testcontainers-go)
-The integration test suite dynamically provisions real `postgres:16-alpine` and `redis:7-alpine` Docker containers, executes all migrations (`000001` through `000008`), and verifies distributed invariants:
+The integration test suite dynamically provisions real `postgres:16-alpine` and `redis:7-alpine` Docker containers, executes all migrations (`000001` through `000009`), and verifies distributed invariants:
 ```bash
 go test -v -tags=integration ./tests/integration/...
 ```
-- **Test 1:** Concurrent match-result submissions validating PostgreSQL `23505` transaction abort and idempotent cached replay.
-- **Test 2:** End-to-end matchmaking ticket publishing, worker consumption, and database state transitions.
-- **Test 3:** Simulated worker crash leaving un-ACKed tickets in Redis PEL, followed by autonomous recovery and processing via `XAUTOCLAIM`.
+- **Test 1:** Concurrent match-result submissions validating PostgreSQL `23505` transaction abort and idempotent cached replay (`TestMatchResultIdeompotency_Concurrent`).
+- **Test 2:** End-to-end matchmaking ticket publishing, worker consumption, and database state transitions (`TestMatchMakingPipeline_EndToEnd`).
+- **Test 3:** Simulated worker crash leaving un-ACKed tickets in Redis PEL, followed by autonomous recovery and processing via `XAUTOCLAIM` (`TestConsumerCrashAndRecovery`).
+- **Test 4:** Dynamic LiveOps configuration activation, cached TTL refresh, and rollback audit trail (`TestLiveOps_DynamicMatchmakingAndRollback`).
+- **Test 5:** Poison message retry capping and automated dead-letter cancellation (`TestMatchmaking_PoisonMessageRetryCap`).
+- **Test 6:** Queue wait expiry loop transitioning timed-out tickets to `EXPIRED` (`TestMatchmaking_QueueWaitExpiryLoop`).
+- **Test 7:** Idempotency key scoping by operation and entity ID (`TestMatchResult_IdempotencyScopingAndHardening`).
+- **Test 8:** Lone player reclaim keeping tickets healthy and `QUEUED` without retry count inflation (`TestMatchmaking_LonePlayerReclaim`).
+- **Test 9:** Atomic queue state transition preventing race conditions between expiry and match transactions (`TestMatchmaking_ExpiryMatchRace`).
+- **Test 10:** Multi-worker stream partitioning, consumer-level PEL isolation, and crash reclaim latency (`TestMatchmaking_TwoWorkersPartitioningAndReclaim`).
+- **Test 11:** WebSocket handshake match membership verification and stranger rejection (`TestWebSocket_MatchMembershipHandshake`).
+- **Test 12:** Tag session lifecycle, lobby timeouts, forfeit on disconnect, and round completion (`TestTagSession_LifecycleAndStatusTransitions`).
+- **Test 13:** Server-authoritative result persistence and secret-protected HTTP endpoint enforcement (`TestServerAuthoritativeResults`).
 
 ---
 
@@ -147,14 +157,15 @@ curl http://localhost:8080/api/v1/matchmaking/status/<ALEX_ID>
 ```
 *Returns `200 OK` with `"status": "MATCHED"` and the generated `match_id`.*
 
-### 4. Submit Match Outcome (Idempotent)
+### 4. Submit Match Outcome (Internal / Server-Authoritative)
 ```bash
 curl -X POST http://localhost:8080/api/v1/matches/<MATCH_ID>/result \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: demo-key-alex-win" \
+  -H "X-Internal-Secret: dev-internal-secret" \
   -d '{"player_id":"<ALEX_ID>","score":150,"result":"WIN"}'
 ```
-*Returns `201 Created`. Sending the exact same request again returns `200 OK` with the cached response without creating duplicate rows.*
+*Returns `201 Created`. (Note: in normal gameplay, results are automatically submitted server-authoritatively by the session room upon round completion or forfeit. If called directly, the request requires `X-Internal-Secret`; unauthenticated calls return `403 Forbidden`. Replays with identical `Idempotency-Key` return `200 OK` with cached results).*
 
 ### 5. Query the Leaderboard
 ```bash
