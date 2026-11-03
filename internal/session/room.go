@@ -3,11 +3,14 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"multiplayer-backend-sim/internal/metrics"
+	"multiplayer-backend-sim/internal/result"
 )
 
 // GameState represents the broadcast snapshot of the arena.
@@ -37,6 +40,7 @@ type Room struct {
 	ID           string
 	MatchID      string
 	sessionStore SessionStore
+	resultStore  result.ResultStore
 	matchPlayers []string
 
 	game    *TagGame
@@ -54,11 +58,12 @@ type Room struct {
 	logger  *slog.Logger
 }
 
-func NewRoom(sessionID, matchID string, matchPlayers []string, sessionStore SessionStore, logger *slog.Logger, onClose func(string)) *Room {
+func NewRoom(sessionID, matchID string, matchPlayers []string, sessionStore SessionStore, resultStore result.ResultStore, logger *slog.Logger, onClose func(string)) *Room {
 	r := &Room{
 		ID:           sessionID,
 		MatchID:      matchID,
 		sessionStore: sessionStore,
+		resultStore:  resultStore,
 		matchPlayers: matchPlayers,
 		Clients:      make(map[string]*Client),
 		Register:     make(chan *Client),
@@ -170,6 +175,7 @@ func (r *Room) Run(ctx context.Context) {
 
 					r.broadcastFrame("game_over", status, currentTick)
 					if outcome != nil {
+						r.submitResults(ctx, outcome)
 						r.logger.Info("match forfeit processed", "leaver", client.PlayerID, "winner", outcome.WinnerID)
 					}
 					return
@@ -222,6 +228,7 @@ func (r *Room) Run(ctx context.Context) {
 					}
 					r.broadcastFrame("game_over", status, currentTick)
 					if r.game.Outcome != nil {
+						r.submitResults(ctx, r.game.Outcome)
 						r.logger.Info("tag match completed normally", "winner", r.game.Outcome.WinnerID, "loser", r.game.Outcome.LoserID)
 					}
 					return
@@ -262,4 +269,63 @@ func (r *Room) broadcastFrame(frameType string, status SessionStatus, tick int) 
 			// Non-blocking drop if client write buffer is full
 		}
 	}
+}
+
+func (r *Room) submitResults(ctx context.Context, outcome *GameOutcome) {
+	if r.resultStore == nil || outcome == nil {
+		return
+	}
+
+	matchUUID, err := uuid.Parse(r.MatchID)
+	if err != nil {
+		matchUUID = uuid.NewMD5(uuid.NameSpaceDNS, []byte(r.MatchID))
+	}
+
+	winnerUUID, err := uuid.Parse(outcome.WinnerID)
+	if err != nil {
+		winnerUUID = uuid.NewMD5(uuid.NameSpaceDNS, []byte(outcome.WinnerID))
+	}
+
+	loserUUID, err := uuid.Parse(outcome.LoserID)
+	if err != nil {
+		loserUUID = uuid.NewMD5(uuid.NameSpaceDNS, []byte(outcome.LoserID))
+	}
+
+	now := time.Now().UTC()
+
+	// Deterministic idempotency keys: match:<matchID>:result:<playerID>
+	winnerIdemKey := fmt.Sprintf("match:%s:result:%s", r.MatchID, outcome.WinnerID)
+	loserIdemKey := fmt.Sprintf("match:%s:result:%s", r.MatchID, outcome.LoserID)
+
+	winnerResult := &result.MatchResult{
+		ID:             uuid.New(),
+		MatchID:        matchUUID,
+		PlayerID:       winnerUUID,
+		Score:          outcome.Scores[outcome.WinnerID],
+		Result:         "WIN",
+		SubmittedAt:    now,
+		IdempotencyKey: &winnerIdemKey,
+	}
+
+	loserResult := &result.MatchResult{
+		ID:             uuid.New(),
+		MatchID:        matchUUID,
+		PlayerID:       loserUUID,
+		Score:          outcome.Scores[outcome.LoserID],
+		Result:         "LOSS",
+		SubmittedAt:    now,
+		IdempotencyKey: &loserIdemKey,
+	}
+
+	respWinner, _ := json.Marshal(winnerResult)
+	if _, err := r.resultStore.SaveResultIdempotent(ctx, winnerResult, "SESSION_OUTCOME", respWinner); err != nil {
+		r.logger.Error("failed to submit winner match result", "error", err, "player_id", outcome.WinnerID)
+	}
+
+	respLoser, _ := json.Marshal(loserResult)
+	if _, err := r.resultStore.SaveResultIdempotent(ctx, loserResult, "SESSION_OUTCOME", respLoser); err != nil {
+		r.logger.Error("failed to submit loser match result", "error", err, "player_id", outcome.LoserID)
+	}
+
+	r.logger.Info("server-authoritative match results submitted", "match_id", r.MatchID, "winner", outcome.WinnerID, "loser", outcome.LoserID)
 }

@@ -42,8 +42,26 @@ func TestSubmitResult(t *testing.T) {
 		matchID        string
 		idempotencyKey string
 		body           []byte
+		omitSecret     bool
+		invalidSecret  bool
 		expectedStatus int
 	}{
+		{
+			name:           "forbidden - missing internal secret",
+			matchID:        matchID.String(),
+			idempotencyKey: idemKey,
+			body:           bodyBytes,
+			omitSecret:     true,
+			expectedStatus: http.StatusForbidden, // 403
+		},
+		{
+			name:           "forbidden - invalid internal secret",
+			matchID:        matchID.String(),
+			idempotencyKey: idemKey,
+			body:           bodyBytes,
+			invalidSecret:  true,
+			expectedStatus: http.StatusForbidden, // 403
+		},
 		{
 			name:           "success - fresh submission",
 			matchID:        matchID.String(),
@@ -91,6 +109,13 @@ func TestSubmitResult(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest("POST", "/api/v1/matches/"+tt.matchID+"/result", bytes.NewReader(tt.body))
+			if !tt.omitSecret {
+				if tt.invalidSecret {
+					req.Header.Set("X-Internal-Secret", "wrong-secret")
+				} else {
+					req.Header.Set("X-Internal-Secret", "dev-internal-secret")
+				}
+			}
 			if tt.idempotencyKey != "" {
 				req.Header.Set("Idempotency-Key", tt.idempotencyKey)
 			}

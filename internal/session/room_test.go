@@ -8,19 +8,21 @@ import (
 	"time"
 
 	"multiplayer-backend-sim/internal/metrics"
+	"multiplayer-backend-sim/internal/result"
 )
 
 func TestRoom_LobbyTimeoutAbortsSession(t *testing.T) {
 	metrics.Init()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	fakeStore := NewFakeSessionStore()
+	fakeResultStore := result.NewFakeResultStore()
 
 	sess, _ := fakeStore.Create(context.Background(), "match-timeout-1")
 
 	manualTicker := NewManualTicker()
 	roomClosed := make(chan struct{})
 
-	room := NewRoom(sess.ID, sess.MatchID, []string{"p1", "p2"}, fakeStore, logger, func(id string) {
+	room := NewRoom(sess.ID, sess.MatchID, []string{"p1", "p2"}, fakeStore, fakeResultStore, logger, func(id string) {
 		close(roomClosed)
 	}).WithTicker(manualTicker)
 
@@ -59,19 +61,25 @@ func TestRoom_LobbyTimeoutAbortsSession(t *testing.T) {
 	if finalSess.Status != SessionStatusAborted {
 		t.Fatalf("expected session status ABORTED, got %s", finalSess.Status)
 	}
+
+	// Lobby timeout must NOT submit any results
+	if fakeResultStore.Count() != 0 {
+		t.Fatalf("expected 0 results on lobby timeout, got %d", fakeResultStore.Count())
+	}
 }
 
 func TestRoom_TwoPlayersStartAndComplete(t *testing.T) {
 	metrics.Init()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	fakeStore := NewFakeSessionStore()
+	fakeResultStore := result.NewFakeResultStore()
 
 	sess, _ := fakeStore.Create(context.Background(), "match-full-1")
 
 	manualTicker := NewManualTicker()
 	roomClosed := make(chan struct{})
 
-	room := NewRoom(sess.ID, sess.MatchID, []string{"p1", "p2"}, fakeStore, logger, func(id string) {
+	room := NewRoom(sess.ID, sess.MatchID, []string{"p1", "p2"}, fakeStore, fakeResultStore, logger, func(id string) {
 		close(roomClosed)
 	}).WithTicker(manualTicker)
 
@@ -118,19 +126,42 @@ func TestRoom_TwoPlayersStartAndComplete(t *testing.T) {
 	if outcome.WinnerID == "" || outcome.LoserID == "" {
 		t.Fatalf("expected non-empty winner and loser: %+v", outcome)
 	}
+
+	// Verify server-side result submission
+	if fakeResultStore.Count() != 2 {
+		t.Fatalf("expected exactly 2 match results submitted, got %d", fakeResultStore.Count())
+	}
+
+	results := fakeResultStore.GetResults()
+	hasWin, hasLoss := false, false
+	for _, res := range results {
+		if res.Result == "WIN" {
+			hasWin = true
+		}
+		if res.Result == "LOSS" {
+			hasLoss = true
+		}
+		if res.IdempotencyKey == nil || *res.IdempotencyKey == "" {
+			t.Fatalf("expected non-empty idempotency key for result: %+v", res)
+		}
+	}
+	if !hasWin || !hasLoss {
+		t.Fatalf("expected 1 WIN and 1 LOSS result, got: %+v", results)
+	}
 }
 
 func TestRoom_MidRoundDisconnectForfeit(t *testing.T) {
 	metrics.Init()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	fakeStore := NewFakeSessionStore()
+	fakeResultStore := result.NewFakeResultStore()
 
 	sess, _ := fakeStore.Create(context.Background(), "match-forfeit-1")
 
 	manualTicker := NewManualTicker()
 	roomClosed := make(chan struct{})
 
-	room := NewRoom(sess.ID, sess.MatchID, []string{"p1", "p2"}, fakeStore, logger, func(id string) {
+	room := NewRoom(sess.ID, sess.MatchID, []string{"p1", "p2"}, fakeStore, fakeResultStore, logger, func(id string) {
 		close(roomClosed)
 	}).WithTicker(manualTicker)
 
@@ -176,5 +207,10 @@ func TestRoom_MidRoundDisconnectForfeit(t *testing.T) {
 	}
 	if outcome.Reason != "forfeit" {
 		t.Fatalf("expected reason 'forfeit', got %s", outcome.Reason)
+	}
+
+	// Verify server-side forfeit results submitted
+	if fakeResultStore.Count() != 2 {
+		t.Fatalf("expected 2 forfeit results submitted, got %d", fakeResultStore.Count())
 	}
 }

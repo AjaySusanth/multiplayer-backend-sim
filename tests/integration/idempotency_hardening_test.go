@@ -28,7 +28,8 @@ func TestMatchResult_IdempotencyScopingAndHardening(t *testing.T) {
 	defer teardown()
 
 	resultStore := result.NewPostgresResultStore(harness.PGPool)
-	handler := result.NewHandler(resultStore)
+	const testSecret = "test-secret"
+	handler := result.NewHandler(resultStore, testSecret)
 
 	r := chi.NewRouter()
 	handler.RegisterRoutes(r)
@@ -57,13 +58,24 @@ func TestMatchResult_IdempotencyScopingAndHardening(t *testing.T) {
 
 	sharedKey := "shared-client-key-999"
 
-	// 3. STEP A: Player 1 submits result with sharedKey -> 201 Created
+	// 2b. Verify unauthenticated client without X-Internal-Secret is rejected with 403 Forbidden
 	p1Body, _ := json.Marshal(map[string]interface{}{
 		"player_id": player1ID.String(),
 		"score":     100,
 		"result":    "WIN",
 	})
+	unauthReq := httptest.NewRequest("POST", "/api/v1/matches/"+matchID.String()+"/result", bytes.NewReader(p1Body))
+	unauthReq.Header.Set("Idempotency-Key", sharedKey)
+	unauthReq.Header.Set("Content-Type", "application/json")
+	unauthRec := httptest.NewRecorder()
+	r.ServeHTTP(unauthRec, unauthReq)
+	if unauthRec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden without internal secret, got %d", unauthRec.Code)
+	}
+
+	// 3. STEP A: Player 1 submits result with sharedKey and X-Internal-Secret -> 201 Created
 	req1 := httptest.NewRequest("POST", "/api/v1/matches/"+matchID.String()+"/result", bytes.NewReader(p1Body))
+	req1.Header.Set("X-Internal-Secret", testSecret)
 	req1.Header.Set("Idempotency-Key", sharedKey)
 	req1.Header.Set("Content-Type", "application/json")
 	rec1 := httptest.NewRecorder()
@@ -75,6 +87,7 @@ func TestMatchResult_IdempotencyScopingAndHardening(t *testing.T) {
 
 	// 4. STEP B: Player 1 submits exact same request with sharedKey again -> 200 OK (idempotent cached replay)
 	req1Dup := httptest.NewRequest("POST", "/api/v1/matches/"+matchID.String()+"/result", bytes.NewReader(p1Body))
+	req1Dup.Header.Set("X-Internal-Secret", testSecret)
 	req1Dup.Header.Set("Idempotency-Key", sharedKey)
 	req1Dup.Header.Set("Content-Type", "application/json")
 	rec1Dup := httptest.NewRecorder()
@@ -92,6 +105,7 @@ func TestMatchResult_IdempotencyScopingAndHardening(t *testing.T) {
 		"result":    "WIN",
 	})
 	req1DiffKey := httptest.NewRequest("POST", "/api/v1/matches/"+matchID.String()+"/result", bytes.NewReader(p1DifferentKeyBody))
+	req1DiffKey.Header.Set("X-Internal-Secret", testSecret)
 	req1DiffKey.Header.Set("Idempotency-Key", "completely-different-key-111")
 	req1DiffKey.Header.Set("Content-Type", "application/json")
 	rec1DiffKey := httptest.NewRecorder()
@@ -119,6 +133,7 @@ func TestMatchResult_IdempotencyScopingAndHardening(t *testing.T) {
 		"result":    "LOSS",
 	})
 	req2 := httptest.NewRequest("POST", "/api/v1/matches/"+matchID.String()+"/result", bytes.NewReader(p2Body))
+	req2.Header.Set("X-Internal-Secret", testSecret)
 	req2.Header.Set("Idempotency-Key", sharedKey) // same key as player 1
 	req2.Header.Set("Content-Type", "application/json")
 	rec2 := httptest.NewRecorder()

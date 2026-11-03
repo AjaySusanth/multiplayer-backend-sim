@@ -14,8 +14,9 @@ type Config struct {
 	DatabaseURL string
 	RedisURL    string
 	LogLevel    string
-	WorkerCount int
-	WorkerID    string
+	WorkerCount    int
+	WorkerID       string
+	InternalSecret string
 }
 
 // Load reads configuration from environment variables, falling back to sensible defaults for local development.
@@ -30,8 +31,9 @@ func Load() *Config {
 		DatabaseURL: getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/multiplayer_sim?sslmode=disable"),
 		RedisURL:    getEnv("REDIS_URL", "redis://localhost:6379/0"),
 		LogLevel:    getEnv("LOG_LEVEL", "info"),
-		WorkerCount: getEnvAsInt("WORKER_COUNT", 3),
-		WorkerID:    workerID,
+		WorkerCount:    getEnvAsInt("WORKER_COUNT", 3),
+		WorkerID:       workerID,
+		InternalSecret: getEnv("INTERNAL_SECRET", "dev-internal-secret"),
 	}
 }
 

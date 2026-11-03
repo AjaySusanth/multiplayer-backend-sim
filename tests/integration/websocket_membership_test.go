@@ -89,7 +89,7 @@ func TestWebSocket_MatchMembershipHandshake(t *testing.T) {
 	}
 
 	// 4. Mount Session Handler with real PostgresMatchStore
-	sessionHandler := session.NewHandler(sessionStore, matchStore, discardLogger)
+	sessionHandler := session.NewHandler(sessionStore, matchStore, nil, discardLogger)
 	r := chi.NewRouter()
 	sessionHandler.RegisterRoutes(r)
 

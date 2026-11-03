@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
+	"multiplayer-backend-sim/internal/result"
 )
 
 var upgrader = websocket.Upgrader{
@@ -24,15 +25,17 @@ type MatchChecker interface {
 type Handler struct {
 	sessionStore SessionStore
 	matchChecker MatchChecker
+	resultStore  result.ResultStore
 	roomManager  *RoomManager
 	logger       *slog.Logger
 }
 
-func NewHandler(sessionStore SessionStore, matchChecker MatchChecker, logger *slog.Logger) *Handler {
+func NewHandler(sessionStore SessionStore, matchChecker MatchChecker, resultStore result.ResultStore, logger *slog.Logger) *Handler {
 	return &Handler{
 		sessionStore: sessionStore,
 		matchChecker: matchChecker,
-		roomManager:  NewRoomManager(context.Background(), sessionStore, logger),
+		resultStore:  resultStore,
+		roomManager:  NewRoomManager(context.Background(), sessionStore, resultStore, logger),
 		logger:       logger,
 	}
 }

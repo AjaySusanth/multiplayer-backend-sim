@@ -16,6 +16,7 @@ import (
 	"github.com/gorilla/websocket"
 	"multiplayer-backend-sim/internal/matchmaking"
 	"multiplayer-backend-sim/internal/metrics"
+	"multiplayer-backend-sim/internal/result"
 	"multiplayer-backend-sim/internal/session"
 )
 
@@ -82,7 +83,8 @@ func TestTagSession_LifecycleAndStatusTransitions(t *testing.T) {
 	}
 
 	// 4. Mount Session Handler with real stores
-	sessionHandler := session.NewHandler(sessionStore, matchStore, discardLogger)
+	resultStore := result.NewPostgresResultStore(harness.PGPool)
+	sessionHandler := session.NewHandler(sessionStore, matchStore, resultStore, discardLogger)
 	r := chi.NewRouter()
 	sessionHandler.RegisterRoutes(r)
 
@@ -150,5 +152,40 @@ func TestTagSession_LifecycleAndStatusTransitions(t *testing.T) {
 	}
 	if sessFinished.FinishedAt == nil {
 		t.Fatalf("expected finished_at timestamp to be set in database")
+	}
+
+	// 8. Verify authoritative match results were persisted directly by the room
+	rows, err := harness.PGPool.Query(ctx, `
+		SELECT player_id, result, idempotency_key
+		FROM match_results
+		WHERE match_id = $1
+	`, match.ID)
+	if err != nil {
+		t.Fatalf("failed to query match_results: %v", err)
+	}
+	defer rows.Close()
+
+	results := make(map[string]string)
+	for rows.Next() {
+		var pID, res, idemKey string
+		if err := rows.Scan(&pID, &res, &idemKey); err != nil {
+			t.Fatalf("failed to scan match_result: %v", err)
+		}
+		results[pID] = res
+		expectedIdemKey := "match:" + match.ID + ":result:" + pID
+		if idemKey != expectedIdemKey {
+			t.Errorf("expected deterministic idempotency key %s, got %s", expectedIdemKey, idemKey)
+		}
+	}
+
+	if len(results) != 2 {
+		t.Fatalf("expected exactly 2 match results in database, got %d", len(results))
+	}
+	// Player 1 left -> LOSS; Player 2 stayed -> WIN
+	if results[p1ID.String()] != "LOSS" {
+		t.Errorf("expected leaver p1 to have LOSS, got %s", results[p1ID.String()])
+	}
+	if results[p2ID.String()] != "WIN" {
+		t.Errorf("expected remaining p2 to have WIN, got %s", results[p2ID.String()])
 	}
 }

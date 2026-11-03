@@ -11,11 +11,24 @@ import (
 )
 
 type Handler struct {
-	store ResultStore
+	store          ResultStore
+	internalSecret string
 }
 
-func NewHandler(store ResultStore) *Handler {
-	return &Handler{store: store}
+func NewHandler(store ResultStore, internalSecret ...string) *Handler {
+	secret := "dev-internal-secret"
+	if len(internalSecret) > 0 && internalSecret[0] != "" {
+		secret = internalSecret[0]
+	}
+	return &Handler{
+		store:          store,
+		internalSecret: secret,
+	}
+}
+
+func (h *Handler) WithInternalSecret(secret string) *Handler {
+	h.internalSecret = secret
+	return h
 }
 
 func (h *Handler) RegisterRoutes(r chi.Router) {
@@ -29,6 +42,13 @@ type SubmitResultRequest struct {
 }
 
 func (h *Handler) SubmitResult(w http.ResponseWriter, r *http.Request) {
+	// Verify internal authorization secret (endpoint is internal-only)
+	secret := r.Header.Get("X-Internal-Secret")
+	if h.internalSecret != "" && secret != h.internalSecret {
+		http.Error(w, "forbidden: internal-only endpoint", http.StatusForbidden)
+		return
+	}
+
 	matchIDStr := chi.URLParam(r, "match_id")
 	matchID, err := uuid.Parse(matchIDStr)
 	if err != nil {

@@ -28,15 +28,19 @@ func TestLoad(t *testing.T) {
 				if !strings.HasPrefix(cfg.WorkerID, "worker-") {
 					t.Errorf("expected default WorkerID to start with 'worker-', got %s", cfg.WorkerID)
 				}
+				if cfg.InternalSecret != "dev-internal-secret" {
+					t.Errorf("expected default InternalSecret 'dev-internal-secret', got %s", cfg.InternalSecret)
+				}
 			},
 		},
 		{
 			name: "Explicit WORKER_ID override is preserved",
 			envVars: map[string]string{
-				"PORT":         "9090",
-				"LOG_LEVEL":    "debug",
-				"WORKER_COUNT": "5",
-				"WORKER_ID":    "worker-custom-test-1",
+				"PORT":            "9090",
+				"LOG_LEVEL":       "debug",
+				"WORKER_COUNT":    "5",
+				"WORKER_ID":       "worker-custom-test-1",
+				"INTERNAL_SECRET": "prod-secret-test",
 			},
 			assertConfig: func(t *testing.T, cfg *Config) {
 				if cfg.Port != "9090" {
@@ -50,6 +54,9 @@ func TestLoad(t *testing.T) {
 				}
 				if cfg.WorkerID != "worker-custom-test-1" {
 					t.Errorf("expected WorkerID 'worker-custom-test-1', got %s", cfg.WorkerID)
+				}
+				if cfg.InternalSecret != "prod-secret-test" {
+					t.Errorf("expected InternalSecret 'prod-secret-test', got %s", cfg.InternalSecret)
 				}
 			},
 		},

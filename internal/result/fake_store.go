@@ -64,3 +64,21 @@ func (s *FakeResultStore) SaveResultIdempotent(ctx context.Context, res *MatchRe
 
 	return nil, nil
 }
+
+// GetResults returns all stored MatchResults in memory.
+func (s *FakeResultStore) GetResults() []*MatchResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]*MatchResult, 0, len(s.results))
+	for _, r := range s.results {
+		out = append(out, r)
+	}
+	return out
+}
+
+// Count returns the total number of saved MatchResults.
+func (s *FakeResultStore) Count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.results)
+}

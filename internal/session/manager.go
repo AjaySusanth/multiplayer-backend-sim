@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+
+	"multiplayer-backend-sim/internal/result"
 )
 
 // RoomManager owns the lifecycle and contexts of all active in-memory game rooms.
@@ -12,13 +14,14 @@ type RoomManager struct {
 	rooms        map[string]*Room
 	cancels      map[string]context.CancelFunc
 	sessionStore SessionStore
+	resultStore  result.ResultStore
 	rootCtx      context.Context
 	cancel       context.CancelFunc
 	logger       *slog.Logger
 }
 
 // NewRoomManager initializes a RoomManager with its own root context.
-func NewRoomManager(ctx context.Context, sessionStore SessionStore, logger *slog.Logger) *RoomManager {
+func NewRoomManager(ctx context.Context, sessionStore SessionStore, resultStore result.ResultStore, logger *slog.Logger) *RoomManager {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -27,6 +30,7 @@ func NewRoomManager(ctx context.Context, sessionStore SessionStore, logger *slog
 		rooms:        make(map[string]*Room),
 		cancels:      make(map[string]context.CancelFunc),
 		sessionStore: sessionStore,
+		resultStore:  resultStore,
 		rootCtx:      mCtx,
 		cancel:       mCancel,
 		logger:       logger,
@@ -48,7 +52,7 @@ func (m *RoomManager) GetOrCreate(sessionID, matchID string, matchPlayers ...[]s
 	}
 
 	roomCtx, roomCancel := context.WithCancel(m.rootCtx)
-	room := NewRoom(sessionID, matchID, players, m.sessionStore, m.logger, func(id string) {
+	room := NewRoom(sessionID, matchID, players, m.sessionStore, m.resultStore, m.logger, func(id string) {
 		m.Remove(id)
 	})
 

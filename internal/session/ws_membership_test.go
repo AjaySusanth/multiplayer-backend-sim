@@ -47,8 +47,8 @@ func TestWebSocket_MembershipVerification(t *testing.T) {
 	fakeChecker.AddMember(validMatchID, memberPlayerID)
 	fakeChecker.AddMember(validMatchID, "player-member-2")
 
-	roomManager := NewRoomManager(context.Background(), fakeStore, logger)
-	handler := NewHandler(fakeStore, fakeChecker, logger).WithRoomManager(roomManager)
+	roomManager := NewRoomManager(context.Background(), fakeStore, nil, logger)
+	handler := NewHandler(fakeStore, fakeChecker, nil, logger).WithRoomManager(roomManager)
 
 	r := chi.NewRouter()
 	handler.RegisterRoutes(r)
