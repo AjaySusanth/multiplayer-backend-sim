@@ -92,3 +92,24 @@ func (f *FakeMatchStore) IsPlayerInMatch(ctx context.Context, matchID, playerID 
 	}
 	return false, nil
 }
+
+// GetMatchPlayers retrieves all player IDs participating in the given match in memory.
+func (f *FakeMatchStore) GetMatchPlayers(ctx context.Context, matchID string) ([]string, error) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+
+	if f.ErrToReturn != nil {
+		return nil, f.ErrToReturn
+	}
+
+	m, ok := f.matches[matchID]
+	if !ok {
+		return nil, ErrMatchNotFound
+	}
+
+	players := make([]string, 0, len(m.Players))
+	for _, p := range m.Players {
+		players = append(players, p.PlayerID)
+	}
+	return players, nil
+}

@@ -37,12 +37,33 @@ func (c *Client) RunReadPump(conn *websocket.Conn, room *Room, logger *slog.Logg
 			break
 		}
 		var cmd struct {
-			Action string `json:"action"`
+			Action string   `json:"action"`
+			DX     *float64 `json:"dx"`
+			DY     *float64 `json:"dy"`
 		}
 		if err := json.Unmarshal(message, &cmd); err == nil {
+			var dx, dy float64
+			if cmd.DX != nil && cmd.DY != nil {
+				dx = *cmd.DX
+				dy = *cmd.DY
+			} else {
+				switch cmd.Action {
+				case "UP":
+					dy = 1.0
+				case "DOWN":
+					dy = -1.0
+				case "LEFT":
+					dx = -1.0
+				case "RIGHT":
+					dx = 1.0
+				}
+			}
+
 			select {
 			case room.Commands <- PlayerCommand{
 				PlayerID: c.PlayerID,
+				DX:       dx,
+				DY:       dy,
 				Action:   cmd.Action,
 			}:
 			case <-room.Done():

@@ -18,6 +18,7 @@ var upgrader = websocket.Upgrader{
 // MatchChecker defines the dependency needed to verify player match membership.
 type MatchChecker interface {
 	IsPlayerInMatch(ctx context.Context, matchID, playerID string) (bool, error)
+	GetMatchPlayers(ctx context.Context, matchID string) ([]string, error)
 }
 
 type Handler struct {
@@ -31,7 +32,7 @@ func NewHandler(sessionStore SessionStore, matchChecker MatchChecker, logger *sl
 	return &Handler{
 		sessionStore: sessionStore,
 		matchChecker: matchChecker,
-		roomManager:  NewRoomManager(context.Background(), logger),
+		roomManager:  NewRoomManager(context.Background(), sessionStore, logger),
 		logger:       logger,
 	}
 }
@@ -81,6 +82,18 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "forbidden: player is not a member of this match", http.StatusForbidden)
 			return
 		}
+
+		players, err := h.matchChecker.GetMatchPlayers(r.Context(), gameSession.MatchID)
+		if err != nil {
+			h.logger.Error("failed to retrieve match players", "error", err, "match_id", gameSession.MatchID)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		if len(players) != 2 {
+			h.logger.Error("invalid match size for tag session", "match_id", gameSession.MatchID, "count", len(players))
+			http.Error(w, "bad request: tag simulation requires exactly 2 players", http.StatusBadRequest)
+			return
+		}
 	}
 
 	conn, err := upgrader.Upgrade(w, r, nil)
@@ -89,7 +102,14 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	room := h.roomManager.GetOrCreate(sessionID, gameSession.MatchID)
+	var matchPlayers []string
+	if h.matchChecker != nil {
+		if players, err := h.matchChecker.GetMatchPlayers(r.Context(), gameSession.MatchID); err == nil {
+			matchPlayers = players
+		}
+	}
+
+	room := h.roomManager.GetOrCreate(sessionID, gameSession.MatchID, matchPlayers)
 
 	client := &Client{
 		PlayerID: playerID,

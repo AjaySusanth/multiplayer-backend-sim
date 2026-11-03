@@ -8,31 +8,33 @@ import (
 
 // RoomManager owns the lifecycle and contexts of all active in-memory game rooms.
 type RoomManager struct {
-	mu      sync.RWMutex
-	rooms   map[string]*Room
-	cancels map[string]context.CancelFunc
-	rootCtx context.Context
-	cancel  context.CancelFunc
-	logger  *slog.Logger
+	mu           sync.RWMutex
+	rooms        map[string]*Room
+	cancels      map[string]context.CancelFunc
+	sessionStore SessionStore
+	rootCtx      context.Context
+	cancel       context.CancelFunc
+	logger       *slog.Logger
 }
 
 // NewRoomManager initializes a RoomManager with its own root context.
-func NewRoomManager(ctx context.Context, logger *slog.Logger) *RoomManager {
+func NewRoomManager(ctx context.Context, sessionStore SessionStore, logger *slog.Logger) *RoomManager {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	mCtx, mCancel := context.WithCancel(ctx)
 	return &RoomManager{
-		rooms:   make(map[string]*Room),
-		cancels: make(map[string]context.CancelFunc),
-		rootCtx: mCtx,
-		cancel:  mCancel,
-		logger:  logger,
+		rooms:        make(map[string]*Room),
+		cancels:      make(map[string]context.CancelFunc),
+		sessionStore: sessionStore,
+		rootCtx:      mCtx,
+		cancel:       mCancel,
+		logger:       logger,
 	}
 }
 
 // GetOrCreate retrieves an active room by session ID or starts a new one with its own context.
-func (m *RoomManager) GetOrCreate(sessionID, matchID string) *Room {
+func (m *RoomManager) GetOrCreate(sessionID, matchID string, matchPlayers ...[]string) *Room {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -40,8 +42,13 @@ func (m *RoomManager) GetOrCreate(sessionID, matchID string) *Room {
 		return room
 	}
 
+	var players []string
+	if len(matchPlayers) > 0 {
+		players = matchPlayers[0]
+	}
+
 	roomCtx, roomCancel := context.WithCancel(m.rootCtx)
-	room := NewRoom(sessionID, matchID, m.logger, func(id string) {
+	room := NewRoom(sessionID, matchID, players, m.sessionStore, m.logger, func(id string) {
 		m.Remove(id)
 	})
 

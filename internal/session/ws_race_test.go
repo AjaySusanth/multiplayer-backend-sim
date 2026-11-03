@@ -36,7 +36,7 @@ func TestWebSocket_TwoClientsConcurrencyAndMapCleanup(t *testing.T) {
 	fakeMatchChecker.AddMember(matchID, "player-1")
 	fakeMatchChecker.AddMember(matchID, "player-2")
 
-	roomManager := NewRoomManager(context.Background(), logger)
+	roomManager := NewRoomManager(context.Background(), fakeStore, logger)
 	handler := NewHandler(fakeStore, fakeMatchChecker, logger).WithRoomManager(roomManager)
 
 	r := chi.NewRouter()

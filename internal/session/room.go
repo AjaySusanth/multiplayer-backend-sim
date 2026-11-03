@@ -10,13 +10,15 @@ import (
 	"multiplayer-backend-sim/internal/metrics"
 )
 
-type Position struct {
-	X int `json:"x"`
-	Y int `json:"y"`
-}
-
+// GameState represents the broadcast snapshot of the arena.
 type GameState struct {
-	Players map[string]*Position `json:"players"`
+	Type           string                     `json:"type,omitempty"`
+	Status         SessionStatus              `json:"status,omitempty"`
+	Tick           int                        `json:"tick,omitempty"`
+	TicksRemaining int                        `json:"ticks_remaining,omitempty"`
+	CurrentItID    string                     `json:"current_it_id,omitempty"`
+	Players        map[string]*PlayerSimState `json:"players"`
+	Outcome        *GameOutcome               `json:"outcome,omitempty"`
 }
 
 type Client struct {
@@ -26,14 +28,19 @@ type Client struct {
 
 type PlayerCommand struct {
 	PlayerID string
+	DX       float64
+	DY       float64
 	Action   string
 }
 
 type Room struct {
-	ID      string
-	MatchID string
+	ID           string
+	MatchID      string
+	sessionStore SessionStore
+	matchPlayers []string
 
-	state   GameState
+	game    *TagGame
+	ticker  Ticker
 	stateMu sync.RWMutex
 
 	Clients map[string]*Client
@@ -47,24 +54,43 @@ type Room struct {
 	logger  *slog.Logger
 }
 
-func NewRoom(sessionID, matchID string, logger *slog.Logger, onClose func(string)) *Room {
-	return &Room{
-		ID:         sessionID,
-		MatchID:    matchID,
-		state:      GameState{Players: make(map[string]*Position)},
-		Clients:    make(map[string]*Client),
-		Register:   make(chan *Client),
-		Unregister: make(chan *Client),
-		Commands:   make(chan PlayerCommand, 100), // Buffer up to 100 fast keystrokes
-		done:       make(chan struct{}),
-		onClose:    onClose,
-		logger:     logger,
+func NewRoom(sessionID, matchID string, matchPlayers []string, sessionStore SessionStore, logger *slog.Logger, onClose func(string)) *Room {
+	r := &Room{
+		ID:           sessionID,
+		MatchID:      matchID,
+		sessionStore: sessionStore,
+		matchPlayers: matchPlayers,
+		Clients:      make(map[string]*Client),
+		Register:     make(chan *Client),
+		Unregister:   make(chan *Client),
+		Commands:     make(chan PlayerCommand, 100),
+		done:         make(chan struct{}),
+		onClose:      onClose,
+		logger:       logger,
 	}
+
+	if len(matchPlayers) == 2 {
+		r.game = NewTagGame(matchPlayers[0], matchPlayers[1])
+	}
+	return r
+}
+
+// WithTicker injects a custom or manual ticker for testing.
+func (r *Room) WithTicker(t Ticker) *Room {
+	r.ticker = t
+	return r
 }
 
 // Done returns a channel that is closed when the Room finishes execution.
 func (r *Room) Done() <-chan struct{} {
 	return r.done
+}
+
+// Game returns the underlying TagGame state (for inspection in tests).
+func (r *Room) Game() *TagGame {
+	r.stateMu.RLock()
+	defer r.stateMu.RUnlock()
+	return r.game
 }
 
 func (r *Room) Run(ctx context.Context) {
@@ -78,8 +104,15 @@ func (r *Room) Run(ctx context.Context) {
 	}()
 
 	r.logger.Info("game room started", "session_id", r.ID)
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
+
+	if r.ticker == nil {
+		r.ticker = NewRealTicker(100 * time.Millisecond)
+	}
+	defer r.ticker.Stop()
+
+	status := SessionStatusStarting
+	lobbyTicks := 0
+	currentTick := 0
 
 	for {
 		select {
@@ -89,65 +122,144 @@ func (r *Room) Run(ctx context.Context) {
 
 		case client := <-r.Register:
 			r.Clients[client.PlayerID] = client
-			r.stateMu.Lock()
+			r.logger.Info("player joined arena", "player_id", client.PlayerID, "client_count", len(r.Clients))
 
-			if _, exists := r.state.Players[client.PlayerID]; !exists {
-				r.state.Players[client.PlayerID] = &Position{
-					X: 0,
-					Y: 0,
+			// If both players connected and session was in STARTING state:
+			if len(r.Clients) == 2 && status == SessionStatusStarting {
+				status = SessionStatusInProgress
+				if r.sessionStore != nil {
+					if err := r.sessionStore.UpdateStatus(ctx, r.ID, SessionStatusInProgress); err != nil {
+						r.logger.Error("failed to update session status to IN_PROGRESS", "error", err)
+					}
 				}
-			}
 
-			r.stateMu.Unlock()
-			r.logger.Info("player joined arena", "player_id", client.PlayerID)
+				r.stateMu.Lock()
+				if r.game == nil {
+					clientIDs := make([]string, 0, 2)
+					for id := range r.Clients {
+						clientIDs = append(clientIDs, id)
+					}
+					r.game = NewTagGame(clientIDs[0], clientIDs[1])
+				}
+				r.stateMu.Unlock()
+
+				r.broadcastFrame("round_start", status, currentTick)
+				r.logger.Info("both players connected, tag round starting", "session_id", r.ID)
+			}
 
 		case client := <-r.Unregister:
 			if _, ok := r.Clients[client.PlayerID]; ok {
 				delete(r.Clients, client.PlayerID)
 				r.logger.Info("player left arena", "player_id", client.PlayerID)
 
-				// If all players left, the arena is empty. Shut it down.
-				if len(r.Clients) == 0 {
-					r.logger.Info("room empty, shutting down", "session_id", r.ID)
+				// If match was IN_PROGRESS, mid-round disconnect triggers forfeit!
+				if status == SessionStatusInProgress {
+					r.stateMu.Lock()
+					var outcome *GameOutcome
+					if r.game != nil {
+						outcome = r.game.Forfeit(client.PlayerID)
+					}
+					r.stateMu.Unlock()
+
+					status = SessionStatusFinished
+					if r.sessionStore != nil {
+						if err := r.sessionStore.UpdateStatus(ctx, r.ID, SessionStatusFinished); err != nil {
+							r.logger.Error("failed to update session status to FINISHED on forfeit", "error", err)
+						}
+					}
+
+					r.broadcastFrame("game_over", status, currentTick)
+					if outcome != nil {
+						r.logger.Info("match forfeit processed", "leaver", client.PlayerID, "winner", outcome.WinnerID)
+					}
+					return
+				}
+
+				// If room was STARTING and became empty, shutdown
+				if len(r.Clients) == 0 && status == SessionStatusStarting {
+					r.logger.Info("room empty in starting state, shutting down", "session_id", r.ID)
 					return
 				}
 			}
 
 		case cmd := <-r.Commands:
 			r.stateMu.Lock()
-			pos, exists := r.state.Players[cmd.PlayerID]
-			if exists {
-				switch cmd.Action {
-				case "UP":
-					pos.Y++
-				case "DOWN":
-					pos.Y--
-				case "LEFT":
-					pos.X--
-				case "RIGHT":
-					pos.X++
-				}
+			if r.game != nil && status == SessionStatusInProgress {
+				r.game.ApplyDirection(cmd.PlayerID, Vector{X: cmd.DX, Y: cmd.DY})
 			}
 			r.stateMu.Unlock()
 
-		case <-ticker.C:
-			r.stateMu.RLock()
-			stateJSON, err := json.Marshal(r.state)
-			r.stateMu.RUnlock()
-
-			if err != nil {
-				r.logger.Error("failed to marshal game state", "error", err)
+		case <-r.ticker.C():
+			if status == SessionStatusStarting {
+				lobbyTicks++
+				if lobbyTicks >= LobbyTimeoutTicks { // 150 ticks = 15s at 10Hz
+					r.logger.Warn("lobby connection timeout (15s elapsed), aborting session", "session_id", r.ID)
+					status = SessionStatusAborted
+					if r.sessionStore != nil {
+						if err := r.sessionStore.UpdateStatus(ctx, r.ID, SessionStatusAborted); err != nil {
+							r.logger.Error("failed to update session status to ABORTED", "error", err)
+						}
+					}
+					return
+				}
 				continue
 			}
 
-			for _, client := range r.Clients {
-				select {
-				case client.Send <- stateJSON:
-					// Sent successfully to client write pump buffer
-				default:
-					// Drop frame if client send buffer is full to prevent freezing room for others
+			if status == SessionStatusInProgress {
+				currentTick++
+				r.stateMu.Lock()
+				isFinished := r.game.Tick()
+				r.stateMu.Unlock()
+
+				r.broadcastFrame("state", status, currentTick)
+
+				if isFinished {
+					status = SessionStatusFinished
+					if r.sessionStore != nil {
+						if err := r.sessionStore.UpdateStatus(ctx, r.ID, SessionStatusFinished); err != nil {
+							r.logger.Error("failed to update session status to FINISHED", "error", err)
+						}
+					}
+					r.broadcastFrame("game_over", status, currentTick)
+					if r.game.Outcome != nil {
+						r.logger.Info("tag match completed normally", "winner", r.game.Outcome.WinnerID, "loser", r.game.Outcome.LoserID)
+					}
+					return
 				}
 			}
+		}
+	}
+}
+
+func (r *Room) broadcastFrame(frameType string, status SessionStatus, tick int) {
+	r.stateMu.RLock()
+	if r.game == nil {
+		r.stateMu.RUnlock()
+		return
+	}
+
+	frame := GameState{
+		Type:           frameType,
+		Status:         status,
+		Tick:           tick,
+		TicksRemaining: r.game.TicksRemaining,
+		CurrentItID:    r.game.CurrentItID,
+		Players:        r.game.Players,
+		Outcome:        r.game.Outcome,
+	}
+	r.stateMu.RUnlock()
+
+	stateJSON, err := json.Marshal(frame)
+	if err != nil {
+		r.logger.Error("failed to marshal frame broadcast", "error", err)
+		return
+	}
+
+	for _, client := range r.Clients {
+		select {
+		case client.Send <- stateJSON:
+		default:
+			// Non-blocking drop if client write buffer is full
 		}
 	}
 }

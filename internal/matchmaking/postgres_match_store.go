@@ -200,3 +200,38 @@ func (s *PostgresMatchStore) IsPlayerInMatch(ctx context.Context, matchID, playe
 	}
 	return exists, nil
 }
+
+// GetMatchPlayers retrieves all player IDs participating in the given match.
+func (s *PostgresMatchStore) GetMatchPlayers(ctx context.Context, matchID string) ([]string, error) {
+	query := `
+		SELECT player_id
+		FROM match_players
+		WHERE match_id = $1
+		ORDER BY joined_at ASC
+	`
+	rows, err := s.pool.Query(ctx, query, matchID)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "22P02" {
+			return nil, ErrMatchNotFound
+		}
+		return nil, fmt.Errorf("querying match players: %w", err)
+	}
+	defer rows.Close()
+
+	var players []string
+	for rows.Next() {
+		var pID string
+		if err := rows.Scan(&pID); err != nil {
+			return nil, fmt.Errorf("scanning match player: %w", err)
+		}
+		players = append(players, pID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating match players: %w", err)
+	}
+	if len(players) == 0 {
+		return nil, ErrMatchNotFound
+	}
+	return players, nil
+}

@@ -106,3 +106,19 @@ func (f *FakeMatchChecker) IsPlayerInMatch(ctx context.Context, matchID, playerI
 	}
 	return f.members[matchID][playerID], nil
 }
+
+func (f *FakeMatchChecker) GetMatchPlayers(ctx context.Context, matchID string) ([]string, error) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.members[matchID] == nil {
+		return nil, nil
+	}
+	players := make([]string, 0, len(f.members[matchID]))
+	for pID := range f.members[matchID] {
+		players = append(players, pID)
+	}
+	return players, nil
+}
